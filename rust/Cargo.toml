@@ -29,6 +29,7 @@ mockall = "0.12"
 tokio-test = "0.4"
 wiremock = "0.6"
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
 lto = true
