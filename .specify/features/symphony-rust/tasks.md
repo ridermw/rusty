@@ -1,10 +1,26 @@
 # Symphony Rust — Task Breakdown
 
-## Phase 1: Foundation
+**Input**: Design documents from `.specify/features/symphony-rust/`
+**Prerequisites**: plan.md (required), spec.md (required for user stories)
+
+## User Story → Phase Mapping
+
+| User Story | Phases | MVP? |
+|---|---|---|
+| **US1** — Core Poll-Dispatch-Run (P1) 🎯 | Phase 1 (S1-S4), Phase 3 (S7-S8), Phase 4 (S9-S11), Phase 5 (S12-S14) | ✅ MVP |
+| **US2** — Config & Hot Reload (P2) | Phase 1 (S2-S3) | |
+| **US3** — Reconciliation & Retry (P3) | Phase 4 (S10-S11) | |
+| **US4** — HTTP API & Dashboard (P4) | Phase 6 (S16-S17) | |
+| **US5** — GitHub Issues Integration (P5) | Phase 2 (S5-S6) | |
+| **US6** — github_graphql Tool (P6) | Phase 7 (S19) | |
+
+## Phase 1: Setup & Foundation (Shared Infrastructure)
+
+**Purpose**: Project skeleton, config, workflow loader, prompt — blocks all user stories.
 
 ### Story 1: Project Skeleton
 - [x] T1.1: `cargo init rust --name symphony` with workspace Cargo.toml [P]
-- [ ] T1.2: Add dependencies to Cargo.toml (tokio, serde, serde_json, serde_yaml, clap, tracing, reqwest, axum, liquid, notify, chrono, uuid, thiserror, anyhow, async-trait, mockall)
+- [ ] T1.2: Add dependencies to Cargo.toml (tokio, serde, serde_json, serde_yaml, clap, tracing, reqwest, axum, liquid, notify, chrono, uuid, thiserror, anyhow, async-trait, mockall, dirs)
 - [ ] T1.3: Create module structure (`src/lib.rs`, all `mod.rs` files, empty modules)
 - [ ] T1.4: Configure `clippy.toml`, `rustfmt.toml`, release profile with LTO
 - [ ] T1.5: Add `Makefile` with build/test/lint/fmt targets
@@ -13,10 +29,11 @@
 Depends on: S1
 - [ ] T2.1: Define `TrackerConfig` struct with serde defaults and `$VAR` resolution
 - [ ] T2.2: Define `PollingConfig`, `WorkspaceConfig`, `HooksConfig`, `AgentConfig`, `ServerConfig`
-- [ ] T2.3: Implement `~` home expansion and `$VAR` env resolution for path fields
+- [ ] T2.3: Implement `~` home expansion via `dirs::home_dir()` and `$VAR` env resolution via shared `config::env::resolve_env_value()`
 - [ ] T2.4: Implement config validation (tracker.kind=`"github"`, api_key/`GITHUB_TOKEN`, repo, agent.command)
 - [ ] T2.5: Implement `max_concurrent_agents_by_state` normalization (lowercase keys, ignore invalid)
 - [ ] T2.6: Write tests for all defaults, env resolution, validation errors
+- [ ] T2.7: Write Windows-specific tests for `~` expansion (USERPROFILE) and `$VAR` behavior (T-WIN-1)
   - Files: `src/config/mod.rs`, `src/config/schema.rs`, `tests/config_test.rs`
 
 ### Story 3: Workflow Loader
@@ -37,7 +54,10 @@ Depends on: S3
 - [ ] T4.5: Write tests for rendering, strict variable checking, strict filter checking
   - Files: `src/prompt.rs`, `tests/prompt_test.rs`
 
-## Phase 2: Tracker Integration
+## Phase 2: User Story 5 — GitHub Issues Integration (P5)
+
+**Goal**: Fetch issues from GitHub, normalize to domain model, handle rate limits.
+**Independent Test**: Call `fetch_candidate_issues()` with mock GitHub API, verify normalized `Issue` structs.
 
 ### Story 5: Tracker Trait + Memory Implementation
 Depends on: S1
@@ -58,10 +78,14 @@ Depends on: S2, S5
 - [ ] T6.6: Implement assignee-based filtering (`tracker.assignee`, `"me"` resolution via authenticated user)
 - [ ] T6.7: Implement label-based state mapping (e.g., `todo` label → `"Todo"` state for dispatch)
 - [ ] T6.8: Implement error mapping (transport, HTTP status, rate limiting, malformed payloads)
-- [ ] T6.9: Write tests with mock HTTP server (wiremock or similar)
+- [ ] T6.9: Implement ETag caching for conditional requests (`If-None-Match` → `304 Not Modified`) to reduce rate limit burn
+- [ ] T6.10: Write tests with mock HTTP server (wiremock or similar)
   - Files: `src/tracker/github/client.rs`, `src/tracker/github/adapter.rs`, `src/tracker/github/issue.rs`
 
-## Phase 3: Workspace Management
+## Phase 3: Workspace Management (US1 prerequisite)
+
+**Goal**: Per-issue workspaces with platform-aware hooks.
+**Independent Test**: Create workspace, run a hook, verify path safety.
 
 ### Story 7: Path Safety
 Depends on: S1
@@ -75,14 +99,21 @@ Depends on: S1
 Depends on: S2, S7
 - [ ] T8.1: Implement `create_for_issue` (create dir if new, reuse if exists, track `created_now`)
 - [ ] T8.2: Implement `remove_workspace` with `before_remove` hook
-- [ ] T8.3: Implement hook execution (`sh -lc <script>` with workspace cwd)
+- [ ] T8.3: Implement hook execution via `ShellExecutor` trait (`sh -lc` on Unix, `pwsh -Command` on Windows)
 - [ ] T8.4: Implement hook timeout enforcement (`hooks.timeout_ms`)
 - [ ] T8.5: Implement hook failure semantics (after_create fatal, before_run fatal, after_run/before_remove ignored)
-- [ ] T8.6: Implement remote workspace ops via SSH
-- [ ] T8.7: Write tests for creation, reuse, hooks, timeouts, failures
+- [ ] T8.6: Implement `ShellExecutor` trait with `PosixShell` and `PowerShellExecutor` impls
+- [ ] T8.7: Implement remote workspace ops via SSH
+- [ ] T8.8: Write tests for creation, reuse, hooks, timeouts, failures
+- [ ] T8.9: Write Windows-specific tests for `pwsh -Command` hook execution (T-WIN-2, T-WIN-3)
   - Files: `src/workspace/mod.rs`, `src/workspace/hooks.rs`, `tests/workspace_test.rs`
 
-## Phase 4: Orchestrator Core
+## Phase 4: User Story 1 — Core Poll-Dispatch-Run (P1) 🎯 MVP + User Story 3 — Reconciliation & Retry (P3)
+
+**Goal**: The complete orchestration loop — poll, dispatch, run, reconcile, retry.
+**Independent Test**: Full lifecycle with mock tracker + mock agent process.
+
+**Checkpoint**: After Phase 4, US1 + US3 should be fully functional end-to-end.
 
 ### Story 9: Orchestrator State + Dispatch
 Depends on: S2, S5, S8
@@ -116,11 +147,16 @@ Depends on: S9
 - [ ] T11.6: Write tests for backoff formula, continuation retries, slot exhaustion requeue
   - Files: `src/orchestrator/mod.rs`, `tests/orchestrator_test.rs`
 
-## Phase 5: Agent Integration
+## Phase 5: Agent Integration (US1 completion)
+
+**Goal**: Copilot CLI ACP protocol, full agent run lifecycle, token accounting.
+**Independent Test**: Mock ACP process → handshake → turn → completion.
+
+**Checkpoint**: After Phase 5, US1 MVP is complete — poll→dispatch→workspace→agent→completion→retry.
 
 ### Story 12: Copilot CLI ACP Protocol Client
 Depends on: S1
-- [ ] T12.1: Implement subprocess launch (`copilot --acp --stdio` with piped stdio)
+- [ ] T12.1: Implement direct subprocess launch (`copilot --acp --stdio` via `tokio::process::Command`, no shell wrapper)
 - [ ] T12.2: Implement JSON-RPC 2.0 message framing (newline-delimited JSON on stdout)
 - [ ] T12.3: Implement `initialize` request + response parsing with `read_timeout_ms`
 - [ ] T12.4: Implement `initialized` notification
@@ -132,7 +168,8 @@ Depends on: S1
 - [ ] T12.10: Implement user-input-required hard failure (unattended mode)
 - [ ] T12.11: Implement stderr handling (log diagnostics, ignore for protocol)
 - [ ] T12.12: Implement turn timeout enforcement
-- [ ] T12.13: Write tests with mock subprocess (echo-back process)
+- [ ] T12.13: Implement `ChildGuard` Drop wrapper for guaranteed subprocess cleanup on abort
+- [ ] T12.14: Write tests with mock subprocess (echo-back process)
   - Files: `src/agent/acp_client.rs`, `tests/acp_client_test.rs`
 
 ### Story 13: Agent Runner
@@ -154,7 +191,12 @@ Depends on: S9, S13
 - [ ] T14.5: Implement session_id composition (`<thread_id>-<turn_id>`)
 - [ ] T14.6: Write tests for token accumulation, delta correctness, rate-limit tracking
 
-## Phase 6: Observability & Dashboard
+## Phase 6: User Story 4 — HTTP API & Dashboard (P4)
+
+**Goal**: Observability via terminal dashboard + HTTP REST API + web dashboard.
+**Independent Test**: Start server, `GET /api/v1/state`, verify JSON response.
+
+**Checkpoint**: After Phase 6, US4 is complete — operators can monitor via browser or API.
 
 ### Story 15: Structured Logging
 Depends on: S1
@@ -185,17 +227,12 @@ Depends on: S9
 - [ ] T17.8: Write tests for all API endpoints, error cases, dashboard rendering
   - Files: `src/server/mod.rs`, `src/server/api.rs`, `src/server/dashboard.rs`, `tests/api_test.rs`
 
-## Phase 7: Extensions
+## Phase 7: User Story 6 — github_graphql Tool (P6)
 
-### Story 18: SSH Worker Extension
-Depends on: S8, S12
-- [ ] T18.1: Implement SSH command builder (host, workspace path, codex command)
-- [ ] T18.2: Implement remote subprocess launch via SSH stdio
-- [ ] T18.3: Implement per-host concurrency tracking
-- [ ] T18.4: Implement least-loaded host selection
-- [ ] T18.5: Implement host preference on retries
-- [ ] T18.6: Write tests for host selection, concurrency caps, SSH command generation
-  - Files: `src/ssh.rs`, `tests/ssh_test.rs`
+**Checkpoint**: After Phase 7, US6 is complete — agents can query GitHub GraphQL.
+
+### Story 18: SSH Worker Extension — DEFERRED
+Deferred per review decision. Windows SSH adds complexity; optional per SPEC Appendix A.
 
 ### Story 19: github_graphql Dynamic Tool
 Depends on: S6, S12
@@ -207,14 +244,16 @@ Depends on: S6, S12
 - [ ] T19.6: Write tests for valid queries, errors, invalid inputs, missing auth
   - Files: `src/agent/dynamic_tool.rs`, `tests/dynamic_tool_test.rs`
 
-## Phase 8: CLI & Integration
+## Phase 8: CLI & End-to-End Integration
+
+**Checkpoint**: After Phase 8, all user stories are validated end-to-end.
 
 ### Story 20: CLI Entry Point
 Depends on: S9, S15, S17
 - [ ] T20.1: Implement clap argument parser (positional workflow path, --port, --logs-root, guardrails flag)
 - [ ] T20.2: Implement default workflow path (`./WORKFLOW.md`)
 - [ ] T20.3: Implement startup validation and clean error reporting
-- [ ] T20.4: Implement graceful shutdown (SIGINT/SIGTERM handling)
+- [ ] T20.4: Implement graceful shutdown (`tokio::signal::ctrl_c()` cross-platform)
 - [ ] T20.5: Implement exit codes (0 normal, 1 failure)
 - [ ] T20.6: Write tests for arg parsing, missing flag rejection, nonexistent paths
   - Files: `src/main.rs`, `src/cli.rs`, `tests/cli_test.rs`
@@ -226,12 +265,13 @@ Depends on: All
 - [ ] T21.3: Write full lifecycle test (poll → dispatch → run → complete → retry)
 - [ ] T21.4: Write config reload test (change WORKFLOW.md mid-run)
 - [ ] T21.5: Write reconciliation test (terminal state stops worker)
-- [ ] T21.6: Write gated live E2E test with real Linear + Codex (`SYMPHONY_RUN_LIVE_E2E=1`)
+- [ ] T21.6: Write gated live E2E test with real GitHub Issues + Copilot CLI (`SYMPHONY_RUN_LIVE_E2E=1`)
   - Files: `tests/e2e_test.rs`, `tests/fixtures/`
 
 ## Summary
 
-- **21 stories**, **~105 tasks**
+- **21 stories** (1 deferred: SSH), **~110 tasks**
 - **8 phases** with clear dependency ordering
 - **[P]** marks tasks safe for parallel execution within a story
-- Estimated test count: ~200 tests (matching Elixir's 188 + Rust-specific edge cases)
+- **Windows-native**: `pwsh -Command` for hooks, direct subprocess launch for agent, `dirs::home_dir()` for paths
+- Estimated test count: ~210 tests (Elixir's 188 + Windows-specific + ETag + ChildGuard)

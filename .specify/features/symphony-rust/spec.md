@@ -49,29 +49,155 @@ The existing Elixir implementation depends on the BEAM runtime, OTP, and Phoenix
 - Distributed clustering
 - Linear adapter (dropped; trait boundary enables future addition if needed)
 
-## 4. User Scenarios
+## 4. User Stories & Acceptance Scenarios
 
-### Scenario 1: Greenfield Start
-An operator places a `WORKFLOW.md` in their repo, runs `./symphony WORKFLOW.md --i-understand-that-this-will-be-running-without-the-usual-guardrails`, and Symphony begins polling GitHub Issues for issues in active states, dispatching Copilot CLI agent sessions, and managing retries.
+### User Story 1 — Core Poll-Dispatch-Run Loop (Priority: P1) 🎯 MVP
 
-### Scenario 2: Hot Reload
-An operator edits `WORKFLOW.md` to change `polling.interval_ms` from 30000 to 5000. Symphony detects the change, validates the new config, and applies it to future ticks without restart.
+An operator starts Symphony with a valid `WORKFLOW.md` and `GITHUB_TOKEN`. Symphony polls GitHub Issues, dispatches eligible issues to Copilot CLI agent sessions in isolated workspaces, and handles normal completion with continuation retries.
 
-### Scenario 3: Terminal Issue Cleanup
-Symphony starts, queries GitHub Issues for closed/terminal-state issues, and removes stale workspace directories.
+**Why P1**: This is the minimum viable product. Without poll→dispatch→run, nothing else matters.
 
-### Scenario 4: Stall Recovery
-A running Copilot CLI session produces no events for `stall_timeout_ms`. Symphony kills the worker and schedules an exponential-backoff retry.
+**Independent Test**: Start Symphony with a mock GitHub API returning 2 open issues and a mock Copilot CLI process. Verify both issues get dispatched, run, and complete.
 
-### Scenario 5: SSH Worker Pool
-With `worker.ssh_hosts` configured, Symphony distributes agent runs across remote hosts, respecting per-host concurrency limits and preferring least-loaded hosts.
+**Acceptance Scenarios**:
+1. **Given** a valid `WORKFLOW.md` with `tracker.kind: github` and `tracker.repo: owner/repo`, **When** Symphony starts, **Then** it polls GitHub Issues every `polling.interval_ms` and dispatches eligible issues.
+2. **Given** an open GitHub Issue in an active state, **When** it is dispatched, **Then** a workspace is created, the prompt is rendered, and a Copilot CLI session runs.
+3. **Given** a Copilot CLI session completes normally, **When** the issue is still in an active state, **Then** a continuation retry is scheduled after 1000ms.
+4. **Given** concurrency is at `max_concurrent_agents`, **When** a new eligible issue is found, **Then** it is skipped until a slot opens.
 
-### Scenario 6: Dashboard Monitoring
-An operator opens `http://localhost:4000/` and sees running sessions, retry queue, token totals, and rate limits. They hit `/api/v1/refresh` to trigger an immediate poll cycle.
+---
 
-## 5. Architecture Overview
+### User Story 2 — Config, Validation & Hot Reload (Priority: P2)
 
-### 5.1 Crate Structure
+An operator edits `WORKFLOW.md` at runtime. Symphony detects the change, validates the new config, and applies it without restart. Invalid config preserves last-known-good.
+
+**Why P2**: Hot reload is a core conformance requirement (SPEC §6.2) and essential for operational agility.
+
+**Independent Test**: Start Symphony, modify `polling.interval_ms` in WORKFLOW.md, verify new interval takes effect without restart. Then introduce invalid YAML, verify last-known-good is kept and an error is logged.
+
+**Acceptance Scenarios**:
+1. **Given** a running Symphony instance, **When** `WORKFLOW.md` is edited with valid changes, **Then** config is re-applied to future ticks without restart.
+2. **Given** a running Symphony instance, **When** `WORKFLOW.md` is edited with invalid YAML, **Then** the last-known-good config is preserved and an operator-visible error is emitted.
+3. **Given** `tracker.api_key: $GITHUB_TOKEN`, **When** Symphony starts, **Then** it resolves the env var and uses the token for API auth.
+4. **Given** `workspace.root: ~/workspaces`, **When** Symphony starts on Windows, **Then** `~` expands to `USERPROFILE` via `dirs::home_dir()`.
+
+---
+
+### User Story 3 — Reconciliation, Stall Detection & Retry (Priority: P3)
+
+Symphony detects stalled sessions, reconciles running issues against tracker state, and retries failed runs with exponential backoff.
+
+**Why P3**: Without reconciliation, stalled agents run forever and terminal issues never clean up. This is the resilience layer.
+
+**Independent Test**: Start a session, stop sending events for `stall_timeout_ms`, verify the session is killed and a retry is scheduled with correct backoff.
+
+**Acceptance Scenarios**:
+1. **Given** a running agent session with no events for `stall_timeout_ms`, **When** reconciliation runs, **Then** the worker is killed and a retry is scheduled.
+2. **Given** a running issue whose tracker state becomes terminal (closed), **When** reconciliation runs, **Then** the worker is stopped and the workspace is cleaned up.
+3. **Given** a worker that exits abnormally, **When** the orchestrator processes the exit, **Then** an exponential-backoff retry is scheduled: `min(10000 * 2^(attempt-1), max_retry_backoff_ms)`.
+4. **Given** a retry fires but the issue is no longer in active state, **When** the retry handler runs, **Then** the claim is released.
+
+---
+
+### User Story 4 — HTTP API & Dashboard (Priority: P4)
+
+An operator opens a web dashboard or queries the REST API to monitor running sessions, retry queues, token consumption, and trigger manual refreshes.
+
+**Why P4**: Observability is essential for operating multiple concurrent agent runs. Extension conformance per SPEC §13.7.
+
+**Independent Test**: Start Symphony with `--port 4000`, hit `GET /api/v1/state`, verify JSON response with running/retrying counts.
+
+**Acceptance Scenarios**:
+1. **Given** Symphony running with `--port 4000`, **When** `GET /api/v1/state` is called, **Then** a JSON response with running sessions, retry queue, and token totals is returned.
+2. **Given** a known running issue `ABC-123`, **When** `GET /api/v1/ABC-123` is called, **Then** issue-specific runtime details are returned.
+3. **Given** an unknown issue identifier, **When** `GET /api/v1/XYZ-999` is called, **Then** a 404 with `{"error":{"code":"issue_not_found","message":"..."}}` is returned.
+4. **Given** Symphony running, **When** `POST /api/v1/refresh` is called, **Then** an immediate poll cycle is triggered and `202 Accepted` is returned.
+
+---
+
+### User Story 5 — GitHub Issues Tracker Integration (Priority: P5)
+
+Symphony fetches issues from GitHub, maps labels to workflow states, detects blockers from linked issues, and respects API rate limits with ETag caching.
+
+**Why P5**: The tracker adapter is critical but most of its complexity is internal plumbing tested via US1's end-to-end flow. This story covers the GitHub-specific edge cases.
+
+**Independent Test**: Call `fetch_candidate_issues` with a mock GitHub API returning issues with various labels, blockers, and pagination. Verify normalization.
+
+**Acceptance Scenarios**:
+1. **Given** issues with labels `todo`, `in-progress`, **When** candidate fetch runs, **Then** labels are mapped to configured `active_states`.
+2. **Given** an issue blocked by a non-terminal linked issue, **When** dispatch eligibility is checked for a `Todo`-state issue, **Then** it is skipped.
+3. **Given** a previous API response with an ETag, **When** the next poll sends `If-None-Match`, **Then** a `304 Not Modified` response does not count against the rate limit.
+4. **Given** a `429 Too Many Requests` response with `X-RateLimit-Reset`, **When** the client receives it, **Then** it backs off until the reset time.
+
+---
+
+### User Story 6 — `github_graphql` Dynamic Tool (Priority: P6)
+
+The Copilot CLI agent can execute raw GitHub GraphQL queries via a client-side tool, using Symphony's configured `GITHUB_TOKEN` auth.
+
+**Why P6**: Extension conformance. Enables agents to query/mutate GitHub resources without needing their own auth setup.
+
+**Independent Test**: Send a `tool/call` for `github_graphql` with a valid query, verify the GraphQL response is returned to the agent session.
+
+**Acceptance Scenarios**:
+1. **Given** a valid `query` and `variables`, **When** the tool is called, **Then** the GraphQL response is returned with `success: true`.
+2. **Given** a query with top-level GraphQL `errors`, **When** the tool is called, **Then** `success: false` is returned with the error body preserved.
+3. **Given** missing `GITHUB_TOKEN` auth, **When** the tool is called, **Then** a structured failure payload is returned without stalling the session.
+
+### Edge Cases
+
+- What happens when `WORKFLOW.md` is deleted while Symphony is running? → Last-known-good config persists; error logged every tick.
+- What happens when GitHub API returns paginated results that change mid-pagination? → Accept partial staleness; reconciliation on next tick corrects.
+- What happens when two Symphony instances poll the same repo? → No built-in leader election; duplicate dispatch possible. Document as known limitation.
+- What happens when `copilot` binary is not in PATH? → `AgentError::NotFound` on first dispatch attempt; retried with backoff.
+- What happens when a workspace directory is manually deleted while an agent is running? → Agent will fail; orchestrator retries with fresh workspace.
+- What happens when hooks contain Windows-incompatible shell syntax on Windows? → `pwsh -Command` fails; `HookFailed` error, run attempt aborted per hook semantics.
+
+## 5. Requirements
+
+### Functional Requirements
+
+- **FR-001**: System MUST poll GitHub Issues at configurable `polling.interval_ms` intervals.
+- **FR-002**: System MUST dispatch eligible issues to Copilot CLI agent sessions respecting `max_concurrent_agents`.
+- **FR-003**: System MUST create deterministic per-issue workspaces under `workspace.root`.
+- **FR-004**: System MUST enforce workspace path containment under the configured root.
+- **FR-005**: System MUST render prompts using Liquid-compatible strict template engine.
+- **FR-006**: System MUST detect `WORKFLOW.md` changes and hot-reload config without restart.
+- **FR-007**: System MUST preserve last-known-good config on invalid reload.
+- **FR-008**: System MUST reconcile running issues against tracker state every tick.
+- **FR-009**: System MUST terminate workers for terminal-state issues and clean workspaces.
+- **FR-010**: System MUST schedule exponential-backoff retries on worker failures.
+- **FR-011**: System MUST schedule continuation retries (1s) after normal worker exit.
+- **FR-012**: System MUST kill stalled sessions after `stall_timeout_ms` of inactivity.
+- **FR-013**: System MUST execute workspace hooks via platform-appropriate shell (pwsh on Windows, sh on Unix).
+- **FR-014**: System MUST auto-approve agent permission requests when `approval_policy` is `"auto-approve"`.
+- **FR-015**: System MUST hard-fail agent runs that request user input in unattended mode.
+- **FR-016**: System MUST expose structured logs with `issue_id`, `issue_identifier`, `session_id` context.
+- **FR-017**: System MUST support `$VAR` env indirection and `~` home expansion in config paths.
+- **FR-018**: System MUST run natively on Windows without WSL (PowerShell 7+ required for hooks).
+
+### Key Entities
+
+- **Issue**: Normalized tracker record (id, identifier, title, state, labels, blockers, priority, timestamps). Source: GitHub Issues API.
+- **Workspace**: Per-issue filesystem directory under `workspace.root`. Keyed by sanitized issue identifier.
+- **RunAttempt**: One execution attempt for one issue — tracks phase, workspace, timing, error.
+- **LiveSession**: Active Copilot CLI session metadata — session_id, token counters, last event.
+- **RetryEntry**: Scheduled retry with attempt count, backoff delay, error reason.
+- **WorkflowDefinition**: Parsed `WORKFLOW.md` — config map + prompt template string.
+
+### Success Criteria
+
+- **SC-001**: `cargo build --release` produces a single static binary under 50MB.
+- **SC-002**: All SPEC §17.1-17.7 test scenarios pass (adapted for GitHub Issues + Copilot CLI).
+- **SC-003**: `cargo clippy -- -D warnings` passes with zero warnings.
+- **SC-004**: Binary runs natively on Windows 10+ without WSL, with PowerShell 7+ for hooks.
+- **SC-005**: HTTP API returns JSON shapes compatible with SPEC §13.7 examples.
+- **SC-006**: Config hot-reload applies within one poll interval without restart.
+- **SC-007**: GitHub API rate usage stays under 2,000 req/hr with ETag caching at default 30s poll.
+
+## 6. Architecture Overview
+
+### 6.1 Crate Structure
 
 ```
 rust/
@@ -127,7 +253,7 @@ rust/
 └── README.md
 ```
 
-### 5.2 Core Traits
+### 6.2 Core Traits
 
 ```rust
 /// Issue tracker abstraction (SPEC §11)
@@ -156,7 +282,7 @@ pub trait AgentSession: Send {
 }
 ```
 
-### 5.3 Core Types (SPEC §4)
+### 6.3 Core Types (SPEC §4)
 
 ```rust
 /// Normalized issue (SPEC §4.1.1)
@@ -212,7 +338,7 @@ pub enum RunAttemptPhase {
 }
 ```
 
-### 5.4 Concurrency Model
+### 6.4 Concurrency Model
 
 The Elixir implementation uses OTP GenServer + supervised Tasks. The Rust equivalent:
 
@@ -228,9 +354,9 @@ The Elixir implementation uses OTP GenServer + supervised Tasks. The Rust equiva
 
 The orchestrator runs as a single async task that owns all mutable state (no `Arc<Mutex<_>>`). Workers communicate back via an `mpsc` channel. This preserves the single-authority invariant from the spec.
 
-## 6. Detailed Component Specifications
+## 7. Detailed Component Specifications
 
-### 6.1 Workflow Loader (SPEC §5)
+### 7.1 Workflow Loader (SPEC §5)
 
 - Parse `WORKFLOW.md`: detect `---` delimiters, extract YAML front matter, remainder is prompt body
 - YAML must decode to a map; non-map YAML is `workflow_front_matter_not_a_map` error
@@ -238,7 +364,7 @@ The orchestrator runs as a single async task that owns all mutable state (no `Ar
 - Return `WorkflowDefinition { config: serde_yaml::Value, prompt_template: String }`
 - Unknown top-level keys are ignored (forward compatibility)
 
-### 6.2 Config Schema (SPEC §6, adapted for GitHub Issues + Copilot CLI)
+### 7.2 Config Schema (SPEC §6, adapted for GitHub Issues + Copilot CLI)
 
 All fields from SPEC §6.4 adapted for GitHub Issues and Copilot CLI:
 - `tracker.kind`: required (`"github"` — replaces `"linear"`)
@@ -271,7 +397,7 @@ GitHub Issues don't have rich workflow states like Linear. The adapter maps:
 - Labels like `todo`, `in-progress`, `human-review`, `rework` can optionally provide finer-grained state for `active_states` / `terminal_states` matching
 - The `state` field on the normalized `Issue` struct is derived as: if labels match a configured state name, use the label; otherwise use `"open"` or `"closed"`
 
-### 6.3 Orchestrator State Machine (SPEC §7-8)
+### 7.3 Orchestrator State Machine (SPEC §7-8)
 
 The orchestrator loop:
 1. **Reconcile** running issues (stall detection + tracker state refresh)
@@ -291,7 +417,7 @@ Retry backoff (SPEC §8.4):
 - Normal exit: 1000ms continuation retry
 - Failure: `min(10000 * 2^(attempt-1), max_retry_backoff_ms)`
 
-### 6.4 Agent Runner Protocol (Copilot CLI via ACP — adapted from SPEC §10)
+### 7.4 Agent Runner Protocol (Copilot CLI via ACP — adapted from SPEC §10)
 
 JSON-RPC 2.0 over stdio with Copilot CLI in ACP mode (`copilot --acp --stdio`):
 
@@ -321,7 +447,7 @@ Session flow:
 
 The `AgentSession` trait abstracts over both protocols, so the orchestrator doesn't care whether Copilot CLI or Codex is running underneath.
 
-### 6.5 HTTP API (SPEC §13.7)
+### 7.5 HTTP API (SPEC §13.7)
 
 - `GET /` — HTML dashboard
 - `GET /api/v1/state` — JSON system state snapshot
@@ -330,7 +456,7 @@ The `AgentSession` trait abstracts over both protocols, so the orchestrator does
 - `405` for unsupported methods
 - JSON error envelope: `{"error":{"code":"...","message":"..."}}`
 
-### 6.6 SSH Worker Extension (SPEC Appendix A)
+### 7.6 SSH Worker Extension (SPEC Appendix A) — DEFERRED
 
 - `worker.ssh_hosts` list of remote hosts
 - `worker.max_concurrent_agents_per_host` per-host cap
@@ -339,7 +465,7 @@ The `AgentSession` trait abstracts over both protocols, so the orchestrator does
 - Prefer previously-used host on retries
 - Least-loaded host selection for new dispatches
 
-## 7. Elixir Parity Mapping (adapted for GitHub Issues + Copilot CLI)
+## 8. Elixir Parity Mapping (adapted for GitHub Issues + Copilot CLI)
 
 | Elixir Module | Rust Module | Notes |
 |---|---|---|
@@ -368,7 +494,7 @@ The `AgentSession` trait abstracts over both protocols, so the orchestrator does
 | `SymphonyElixir.LogFile` | `logging.rs` | :logger_disk_log → tracing-appender |
 | `SymphonyElixirWeb.*` | `server/*.rs` | Phoenix LiveView → axum + HTML templates |
 
-## 8. Test Strategy (SPEC §17)
+## 9. Test Strategy (SPEC §17)
 
 ### 8.1 Core Conformance Tests
 - Workflow parsing (front matter, prompt, errors, reload)
@@ -390,13 +516,3 @@ The `AgentSession` trait abstracts over both protocols, so the orchestrator does
 ### 8.3 Integration Tests
 - End-to-end with mock GitHub API server + mock Copilot CLI process
 - Gated live E2E tests with `SYMPHONY_RUN_LIVE_E2E=1`
-
-## 9. Success Criteria
-
-1. `cargo build --release` produces a single static binary
-2. All SPEC §17.1-17.7 test scenarios pass (adapted for GitHub Issues + Copilot CLI)
-3. `cargo clippy -- -D warnings` clean
-4. Binary runs against a GitHub repo's issues using `WORKFLOW.md` and `GITHUB_TOKEN`
-5. HTTP API returns compatible JSON shapes
-6. Terminal dashboard displays equivalent information
-7. SSH worker extension functions identically
