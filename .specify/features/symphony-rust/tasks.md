@@ -1,6 +1,22 @@
 # Symphony Rust — Task Breakdown
 
-## Phase 1: Foundation
+**Input**: Design documents from `.specify/features/symphony-rust/`
+**Prerequisites**: plan.md (required), spec.md (required for user stories)
+
+## User Story → Phase Mapping
+
+| User Story | Phases | MVP? |
+|---|---|---|
+| **US1** — Core Poll-Dispatch-Run (P1) 🎯 | Phase 1 (S1-S4), Phase 3 (S7-S8), Phase 4 (S9-S11), Phase 5 (S12-S14) | ✅ MVP |
+| **US2** — Config & Hot Reload (P2) | Phase 1 (S2-S3) | |
+| **US3** — Reconciliation & Retry (P3) | Phase 4 (S10-S11) | |
+| **US4** — HTTP API & Dashboard (P4) | Phase 6 (S16-S17) | |
+| **US5** — GitHub Issues Integration (P5) | Phase 2 (S5-S6) | |
+| **US6** — github_graphql Tool (P6) | Phase 7 (S19) | |
+
+## Phase 1: Setup & Foundation (Shared Infrastructure)
+
+**Purpose**: Project skeleton, config, workflow loader, prompt — blocks all user stories.
 
 ### Story 1: Project Skeleton
 - [x] T1.1: `cargo init rust --name symphony` with workspace Cargo.toml [P]
@@ -38,7 +54,10 @@ Depends on: S3
 - [ ] T4.5: Write tests for rendering, strict variable checking, strict filter checking
   - Files: `src/prompt.rs`, `tests/prompt_test.rs`
 
-## Phase 2: Tracker Integration
+## Phase 2: User Story 5 — GitHub Issues Integration (P5)
+
+**Goal**: Fetch issues from GitHub, normalize to domain model, handle rate limits.
+**Independent Test**: Call `fetch_candidate_issues()` with mock GitHub API, verify normalized `Issue` structs.
 
 ### Story 5: Tracker Trait + Memory Implementation
 Depends on: S1
@@ -63,7 +82,10 @@ Depends on: S2, S5
 - [ ] T6.10: Write tests with mock HTTP server (wiremock or similar)
   - Files: `src/tracker/github/client.rs`, `src/tracker/github/adapter.rs`, `src/tracker/github/issue.rs`
 
-## Phase 3: Workspace Management
+## Phase 3: Workspace Management (US1 prerequisite)
+
+**Goal**: Per-issue workspaces with platform-aware hooks.
+**Independent Test**: Create workspace, run a hook, verify path safety.
 
 ### Story 7: Path Safety
 Depends on: S1
@@ -86,7 +108,12 @@ Depends on: S2, S7
 - [ ] T8.9: Write Windows-specific tests for `pwsh -Command` hook execution (T-WIN-2, T-WIN-3)
   - Files: `src/workspace/mod.rs`, `src/workspace/hooks.rs`, `tests/workspace_test.rs`
 
-## Phase 4: Orchestrator Core
+## Phase 4: User Story 1 — Core Poll-Dispatch-Run (P1) 🎯 MVP + User Story 3 — Reconciliation & Retry (P3)
+
+**Goal**: The complete orchestration loop — poll, dispatch, run, reconcile, retry.
+**Independent Test**: Full lifecycle with mock tracker + mock agent process.
+
+**Checkpoint**: After Phase 4, US1 + US3 should be fully functional end-to-end.
 
 ### Story 9: Orchestrator State + Dispatch
 Depends on: S2, S5, S8
@@ -120,7 +147,12 @@ Depends on: S9
 - [ ] T11.6: Write tests for backoff formula, continuation retries, slot exhaustion requeue
   - Files: `src/orchestrator/mod.rs`, `tests/orchestrator_test.rs`
 
-## Phase 5: Agent Integration
+## Phase 5: Agent Integration (US1 completion)
+
+**Goal**: Copilot CLI ACP protocol, full agent run lifecycle, token accounting.
+**Independent Test**: Mock ACP process → handshake → turn → completion.
+
+**Checkpoint**: After Phase 5, US1 MVP is complete — poll→dispatch→workspace→agent→completion→retry.
 
 ### Story 12: Copilot CLI ACP Protocol Client
 Depends on: S1
@@ -159,7 +191,12 @@ Depends on: S9, S13
 - [ ] T14.5: Implement session_id composition (`<thread_id>-<turn_id>`)
 - [ ] T14.6: Write tests for token accumulation, delta correctness, rate-limit tracking
 
-## Phase 6: Observability & Dashboard
+## Phase 6: User Story 4 — HTTP API & Dashboard (P4)
+
+**Goal**: Observability via terminal dashboard + HTTP REST API + web dashboard.
+**Independent Test**: Start server, `GET /api/v1/state`, verify JSON response.
+
+**Checkpoint**: After Phase 6, US4 is complete — operators can monitor via browser or API.
 
 ### Story 15: Structured Logging
 Depends on: S1
@@ -190,7 +227,9 @@ Depends on: S9
 - [ ] T17.8: Write tests for all API endpoints, error cases, dashboard rendering
   - Files: `src/server/mod.rs`, `src/server/api.rs`, `src/server/dashboard.rs`, `tests/api_test.rs`
 
-## Phase 7: Extensions
+## Phase 7: User Story 6 — github_graphql Tool (P6)
+
+**Checkpoint**: After Phase 7, US6 is complete — agents can query GitHub GraphQL.
 
 ### Story 18: SSH Worker Extension — DEFERRED
 Deferred per review decision. Windows SSH adds complexity; optional per SPEC Appendix A.
@@ -205,7 +244,9 @@ Depends on: S6, S12
 - [ ] T19.6: Write tests for valid queries, errors, invalid inputs, missing auth
   - Files: `src/agent/dynamic_tool.rs`, `tests/dynamic_tool_test.rs`
 
-## Phase 8: CLI & Integration
+## Phase 8: CLI & End-to-End Integration
+
+**Checkpoint**: After Phase 8, all user stories are validated end-to-end.
 
 ### Story 20: CLI Entry Point
 Depends on: S9, S15, S17

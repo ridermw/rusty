@@ -1,5 +1,32 @@
 # Symphony Rust — Implementation Plan
 
+**Branch**: `feat/symphony-rust-impl`
+**Date**: 2026-03-12
+**Spec**: `.specify/features/symphony-rust/spec.md`
+
+## Technical Context
+
+**Language/Version**: Rust 2021 edition, stable toolchain
+**Primary Dependencies**: tokio, axum, reqwest, serde, liquid, notify, clap, tracing
+**Storage**: Filesystem only (workspaces + logs); no database
+**Testing**: `cargo test` + `tokio::test` + `mockall` for trait mocking
+**Target Platform**: Windows 10+ (native, no WSL), Linux, macOS
+**Project Type**: CLI daemon / long-running service
+**Performance Goals**: Handle 10 concurrent agent sessions with <500 req/hr GitHub API usage
+**Constraints**: Single binary <50MB, PowerShell 7+ required on Windows for hooks
+**Scale/Scope**: Single-operator tool; 1-50 concurrent issues per repo
+
+## Constitution Check
+
+| Principle | Status | Notes |
+|---|---|---|
+| I. Spec Fidelity | ✅ Pass | All SPEC §18.1 core + §18.2 extensions covered (SSH deferred) |
+| II. Idiomatic Rust | ✅ Pass | Enums for state machines, Result<T,E>, ownership model |
+| III. Trait-Based Abstraction | ✅ Pass | Tracker, WorkspaceManager, AgentSession, ShellExecutor traits |
+| IV. Test-Driven Development | ✅ Pass | ~210 tests planned across all stories |
+| V. Observability First | ✅ Pass | tracing + structured logs + HTTP API + terminal dashboard |
+| VI. Zero-Downtime Config Reload | ✅ Pass | notify file watcher + last-known-good fallback |
+
 ## Architecture Decisions
 
 ### AD-1: Single-Task Orchestrator with Channel Communication
