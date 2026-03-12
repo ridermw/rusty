@@ -55,6 +55,14 @@ impl Tracker for GitHubAdapter {
             "open"
         };
 
-        self.client.fetch_issues(config, github_state, None).await
+        let all = self.client.fetch_issues(config, github_state, None).await?;
+
+        // Post-filter to only include issues whose resolved state matches the
+        // exact requested states (not the entire open/closed bucket).
+        let requested: Vec<String> = states.iter().map(|s| s.to_lowercase()).collect();
+        Ok(all
+            .into_iter()
+            .filter(|issue| requested.contains(&issue.state.to_lowercase()))
+            .collect())
     }
 }

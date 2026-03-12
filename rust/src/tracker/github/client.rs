@@ -11,6 +11,9 @@ use crate::tracker::{Issue, TrackerError};
 pub struct GitHubClient {
     http: Client,
     etag_cache: RwLock<HashMap<String, String>>,
+    /// Cached issue payloads from last successful fetch, keyed by base URL+state.
+    /// Used to return previous results on 304 Not Modified responses.
+    response_cache: RwLock<HashMap<String, Vec<Issue>>>,
 }
 
 impl GitHubClient {
@@ -18,6 +21,7 @@ impl GitHubClient {
         Self {
             http: Client::new(),
             etag_cache: RwLock::new(HashMap::new()),
+            response_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -54,6 +58,7 @@ impl GitHubClient {
         let token = Self::resolve_token(config)?;
         let base_url = Self::issues_url(config)?;
         let repo_name = Self::repo_name(config);
+        let cache_key = format!("{base_url}?state={state}");
         let mut all_issues = Vec::new();
         let mut page = 1_u32;
 
@@ -94,6 +99,11 @@ impl GitHubClient {
             match status {
                 304 => {
                     debug!(%url, "GitHub API returned 304 Not Modified");
+                    // Return cached response from last successful fetch
+                    if let Some(cached) = self.response_cache.read().unwrap().get(&cache_key) {
+                        return Ok(cached.clone());
+                    }
+                    // No cache available (shouldn't happen, but safe fallback)
                     break;
                 }
                 429 => {
@@ -135,6 +145,12 @@ impl GitHubClient {
 
             page += 1;
         }
+
+        // Cache successful response for 304 handling
+        self.response_cache
+            .write()
+            .unwrap()
+            .insert(cache_key, all_issues.clone());
 
         Ok(all_issues)
     }
