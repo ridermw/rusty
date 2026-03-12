@@ -1,0 +1,84 @@
+use symphony::config::ConfigError;
+use symphony::prompt::render_prompt;
+use symphony::tracker::memory::test_issue;
+use symphony::tracker::Issue;
+
+fn sample_issue() -> Issue {
+    let mut issue = test_issue(
+        "1",
+        "ISSUE-123",
+        "Investigate prompt builder",
+        "open",
+        Some(2),
+    );
+    issue.description = Some("Render the workflow template".to_string());
+    issue.branch_name = Some("feat/issue-123".to_string());
+    issue.url = Some("https://example.test/issues/123".to_string());
+    issue.labels = vec!["bug".to_string(), "backend".to_string()];
+    issue
+}
+
+#[test]
+fn renders_issue_identifier_and_title() {
+    let issue = sample_issue();
+
+    let rendered =
+        render_prompt("{{ issue.identifier }}: {{ issue.title }}", &issue, None).unwrap();
+
+    assert_eq!(rendered, "ISSUE-123: Investigate prompt builder");
+}
+
+#[test]
+fn renders_attempt_when_present() {
+    let issue = sample_issue();
+
+    let rendered = render_prompt("{{ attempt }}", &issue, Some(3)).unwrap();
+
+    assert_eq!(rendered, "3");
+}
+
+#[test]
+fn returns_fallback_prompt_for_empty_template() {
+    let issue = sample_issue();
+
+    let rendered = render_prompt("   ", &issue, None).unwrap();
+
+    assert_eq!(rendered, "You are working on an issue from GitHub.");
+}
+
+#[test]
+fn returns_render_error_for_unknown_variable() {
+    let issue = sample_issue();
+
+    let error = render_prompt("{{ unknown_var }}", &issue, None).unwrap_err();
+
+    assert!(matches!(error, ConfigError::TemplateRenderError(_)));
+}
+
+#[test]
+fn renders_issue_labels_in_loop() {
+    let issue = sample_issue();
+
+    let rendered = render_prompt(
+        "{% for l in issue.labels %}{{ l }} {% endfor %}",
+        &issue,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(rendered, "bug backend ");
+}
+
+#[test]
+fn missing_attempt_variable_is_falsey_in_conditionals() {
+    let issue = sample_issue();
+
+    let rendered = render_prompt(
+        "{% if attempt %}retry {{ attempt }}{% endif %}",
+        &issue,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(rendered, "");
+}
