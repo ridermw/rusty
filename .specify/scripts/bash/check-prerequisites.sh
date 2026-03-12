@@ -78,8 +78,18 @@ done
 SCRIPT_DIR="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
-# Get feature paths and validate branch
-eval $(get_feature_paths)
+# Get feature paths without eval to avoid command injection via branch names
+REPO_ROOT="$(get_repo_root)"
+CURRENT_BRANCH="$(get_current_branch)"
+if has_git; then HAS_GIT="true"; else HAS_GIT="false"; fi
+FEATURE_DIR="$(find_feature_dir_by_prefix "$REPO_ROOT" "$CURRENT_BRANCH")"
+FEATURE_SPEC="$FEATURE_DIR/spec.md"
+IMPL_PLAN="$FEATURE_DIR/plan.md"
+TASKS="$FEATURE_DIR/tasks.md"
+RESEARCH="$FEATURE_DIR/research.md"
+DATA_MODEL="$FEATURE_DIR/data-model.md"
+QUICKSTART="$FEATURE_DIR/quickstart.md"
+CONTRACTS_DIR="$FEATURE_DIR/contracts"
 check_feature_branch "$CURRENT_BRANCH" "$HAS_GIT" || exit 1
 
 # If paths-only mode, output paths and exit (support JSON + paths-only combined)

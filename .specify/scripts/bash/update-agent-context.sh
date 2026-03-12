@@ -449,6 +449,7 @@ update_existing_agent_file() {
                 tech_entries_added=true
             fi
             echo "$line" >> "$temp_file"
+            in_tech_section=false
             continue
         fi
         
