@@ -31,8 +31,16 @@ GitHub Issues uses REST + GraphQL APIs instead of Linear's pure GraphQL. Key dif
 Copilot CLI's ACP (Agent Client Protocol) uses the same JSON-RPC 2.0 over stdio transport as Codex app-server but with slightly different method names (`session/create` vs `thread/start`, `session/message/send` vs `turn/start`). The `AgentSession` trait abstracts over both, so a future `CodexSession` adapter could be added without changing the orchestrator.
 
 
+### AD-9: Windows-Native Shell Strategy (pwsh on Windows, sh on Unix)
+The SPEC says "execute in a local shell context appropriate to the host OS." A `ShellExecutor` trait provides platform-specific hook execution: `sh -lc <script>` on Unix, `pwsh -Command <script>` on Windows (PowerShell 7+ required). Agent launch (Copilot CLI) uses direct subprocess invocation without a shell wrapper — simpler and cross-platform.
 
-### Phase 1: Foundation (Stories 1-4)
+### AD-10: Domain-Scoped Error Hierarchy
+Error types are scoped per domain (`TrackerError`, `WorkspaceError`, `AgentError`, `ConfigError`) and wrapped by a top-level `SymphonyError`. This preserves type-level information about what can fail at each call site, enabling precise `match` handling and better structured logging.
+
+### AD-11: Direct Agent Launch (No Shell Wrapper)
+Unlike the Elixir reference which wraps Codex in `bash -lc`, the Rust impl launches `copilot --acp --stdio` directly via `tokio::process::Command`. No shell wrapper needed — Copilot CLI is a standalone binary. This is simpler, faster, and cross-platform.
+
+
 Establish the project skeleton, config parsing, workflow loading, and prompt rendering. These have no external dependencies and can be fully unit tested.
 
 ### Phase 2: Tracker Integration (Stories 5-6)
@@ -116,7 +124,7 @@ Phase 8: CLI & E2E
 enum OrchestratorMsg {
     Tick,
     WorkerExited { issue_id: String, result: WorkerResult },
-    CodexUpdate { issue_id: String, event: AgentEvent },
+    AgentUpdate { issue_id: String, event: AgentEvent },
     RetryFired { issue_id: String },
     SnapshotRequest { reply: oneshot::Sender<Snapshot> },
     RefreshRequest { reply: oneshot::Sender<RefreshAck> },
@@ -124,35 +132,49 @@ enum OrchestratorMsg {
 }
 ```
 
-### Error Hierarchy
+### Error Hierarchy (Domain-Scoped)
 ```rust
-enum SymphonyError {
-    // Workflow/Config
+// Domain-scoped errors (per Issue 6 review decision)
+enum ConfigError {
     MissingWorkflowFile(PathBuf),
     WorkflowParseError(String),
     WorkflowFrontMatterNotAMap,
     TemplateParseError(String),
     TemplateRenderError(String),
-    // Tracker (GitHub Issues)
-    UnsupportedTrackerKind(String),
-    MissingTrackerApiKey,
-    MissingTrackerRepo,
+}
+
+enum TrackerError {
+    UnsupportedKind(String),
+    MissingApiKey,
+    MissingRepo,
     GitHubApiRequest(reqwest::Error),
     GitHubApiStatus(u16, String),
     GitHubGraphqlErrors(Vec<serde_json::Value>),
     GitHubRateLimited { reset_at: DateTime<Utc> },
-    // Workspace
-    WorkspaceCreationFailed(PathBuf, io::Error),
-    WorkspacePathOutsideRoot { path: PathBuf, root: PathBuf },
+}
+
+enum WorkspaceError {
+    CreationFailed(PathBuf, io::Error),
+    PathOutsideRoot { path: PathBuf, root: PathBuf },
     HookFailed { hook: HookKind, exit_code: i32 },
     HookTimeout { hook: HookKind },
-    // Agent (Copilot CLI ACP)
-    AgentNotFound(String),
+}
+
+enum AgentError {
+    NotFound(String),
     InvalidWorkspaceCwd(PathBuf),
     ResponseTimeout,
     TurnTimeout,
     TurnFailed(String),
     TurnInputRequired,
-    PortExit(i32),
+    ProcessExit(i32),
+}
+
+// Top-level wrapper
+enum SymphonyError {
+    Config(ConfigError),
+    Tracker(TrackerError),
+    Workspace(WorkspaceError),
+    Agent(AgentError),
 }
 ```
