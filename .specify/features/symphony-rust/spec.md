@@ -124,7 +124,7 @@ Symphony fetches issues from GitHub, maps labels to workflow states, detects blo
 **Independent Test**: Call `fetch_candidate_issues` with a mock GitHub API returning issues with various labels, blockers, and pagination. Verify normalization.
 
 **Acceptance Scenarios**:
-1. **Given** issues with labels `todo`, `in-progress`, **When** candidate fetch runs, **Then** labels are mapped to configured `active_states`.
+1. **Given** issues with labels `todo`, `in-progress` and `tracker.state_labels` configured to map them, **When** candidate fetch runs, **Then** labels are resolved to configured state names via first-match lookup.
 2. **Given** an issue blocked by a non-terminal linked issue, **When** dispatch eligibility is checked for a `Todo`-state issue, **Then** it is skipped.
 3. **Given** a previous API response with an ETag, **When** the next poll sends `If-None-Match`, **Then** a `304 Not Modified` response does not count against the rate limit.
 4. **Given** a `429 Too Many Requests` response with `X-RateLimit-Reset`, **When** the client receives it, **Then** it backs off until the reset time.
@@ -175,11 +175,13 @@ The Copilot CLI agent can execute raw GitHub GraphQL queries via a client-side t
 - **FR-016**: System MUST expose structured logs with `issue_id`, `issue_identifier`, `session_id` context.
 - **FR-017**: System MUST support `$VAR` env indirection and `~` home expansion in config paths.
 - **FR-018**: System MUST run natively on Windows without WSL (PowerShell 7+ required for hooks).
+- **FR-019**: System MUST document minimum `GITHUB_TOKEN` scopes: `repo`, `read:discussion`, `project` (read/write Projects v2).
+- **FR-020**: System MUST negotiate ACP protocol capabilities during `initialize` handshake, log the server's reported version, and fail with a clear error if the handshake fails. Proceed with warnings if unknown capabilities are reported.
 
 ### Key Entities
 
-- **Issue**: Normalized tracker record (id, identifier, title, state, labels, blockers, priority, timestamps). Source: GitHub Issues API.
-- **Workspace**: Per-issue filesystem directory under `workspace.root`. Keyed by sanitized issue identifier.
+- **Issue**: Normalized tracker record (id, identifier, title, state, labels, blockers, priority, timestamps). Source: GitHub Issues API. Identifier format: `REPO-NUMBER` (e.g., `rusty-42`), derived from repo name in `tracker.repo` config.
+- **Workspace**: Per-issue filesystem directory under `workspace.root`. Keyed by sanitized issue identifier (e.g., `rusty-42`).
 - **RunAttempt**: One execution attempt for one issue — tracks phase, workspace, timing, error.
 - **LiveSession**: Active Copilot CLI session metadata — session_id, token counters, last event.
 - **RetryEntry**: Scheduled retry with attempt count, backoff delay, error reason.
@@ -374,6 +376,7 @@ All fields from SPEC §6.4 adapted for GitHub Issues and Copilot CLI:
 - `tracker.active_states`: default `["open"]` (GitHub Issues are `open` or `closed`; labels can refine further)
 - `tracker.terminal_states`: default `["closed"]`
 - `tracker.labels`: optional list of label filters to scope which issues are eligible for dispatch
+- `tracker.state_labels`: optional map of `label → state_name` (e.g., `{ "todo": "Todo", "in-progress": "In Progress", "human-review": "Human Review" }`). First matching label wins; no match falls back to `"open"` or `"closed"`. Enables Linear-style workflow states on GitHub Issues.
 - `tracker.assignee`: optional — filter issues by assignee; `"me"` resolves via authenticated user
 - `polling.interval_ms`: default `30000`
 - `workspace.root`: default `<tmp>/symphony_workspaces`, supports `~` and `$VAR`
@@ -391,11 +394,14 @@ All fields from SPEC §6.4 adapted for GitHub Issues and Copilot CLI:
 - `server.port`: optional extension
 
 **GitHub Issues State Mapping:**
-GitHub Issues don't have rich workflow states like Linear. The adapter maps:
-- Issue `state: "open"` → active (eligible for dispatch)
-- Issue `state: "closed"` → terminal (stop worker, cleanup workspace)
-- Labels like `todo`, `in-progress`, `human-review`, `rework` can optionally provide finer-grained state for `active_states` / `terminal_states` matching
-- The `state` field on the normalized `Issue` struct is derived as: if labels match a configured state name, use the label; otherwise use `"open"` or `"closed"`
+GitHub Issues don't have rich workflow states like Linear. The adapter maps states as follows:
+- If `tracker.state_labels` is configured, scan issue labels in order; first label matching a key in the map determines the state name (e.g., label `todo` → state `"Todo"`)
+- If no label matches (or `state_labels` is not configured), fall back to `"open"` or `"closed"` based on the GitHub issue state
+- `active_states` and `terminal_states` are matched against the resolved state name (case-insensitive)
+
+**Issue Identifier Format:**
+- `identifier` is formatted as `REPO-NUMBER` (e.g., `rusty-42`), derived from the repo name portion of `tracker.repo` and the issue number
+- This format is safe for workspace directory names (no sanitization needed) and readable in logs/prompts
 
 ### 7.3 Orchestrator State Machine (SPEC §7-8)
 
@@ -416,6 +422,8 @@ Candidate eligibility (SPEC §8.2):
 Retry backoff (SPEC §8.4):
 - Normal exit: 1000ms continuation retry
 - Failure: `min(10000 * 2^(attempt-1), max_retry_backoff_ms)`
+- No attempt count cap (spec-conformant). Retries continue until issue leaves active state or operator intervenes.
+- Log warnings at attempt thresholds 5, 10, and 20 for operator visibility.
 
 ### 7.4 Agent Runner Protocol (Copilot CLI via ACP — adapted from SPEC §10)
 
@@ -434,8 +442,8 @@ The Agent Client Protocol (ACP) is structurally similar to the Codex app-server 
 | approval requests | permission requests | Agent asking for approval |
 
 Session flow:
-1. Launch `copilot --acp --stdio` as subprocess with piped stdio
-2. Send `initialize` → wait for response (capabilities negotiation)
+1. Launch `copilot --acp --stdio` as subprocess with piped stdio (direct launch, no shell wrapper)
+2. Send `initialize` with desired capabilities → wait for response; log server-reported version/capabilities; warn on unknown capabilities; fail with clear error if handshake fails
 3. Send `initialized` notification
 4. Send `session/create` → get session ID (equivalent to `thread/start`)
 5. Send `session/message/send` with rendered prompt → stream events
