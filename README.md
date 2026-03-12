@@ -25,7 +25,7 @@ Tell your favorite coding agent to build Symphony in a programming language of y
 > Implement Symphony according to the following spec:
 > https://github.com/openai/symphony/blob/main/SPEC.md
 
-### Option 2. Use our experimental reference implementation
+### Option 2. Use our experimental Elixir reference implementation
 
 Check out [elixir/README.md](elixir/README.md) for instructions on how to set up your environment
 and run the Elixir-based Symphony implementation. You can also ask your favorite coding agent to
@@ -33,6 +33,13 @@ help with the setup:
 
 > Set up Symphony for my repository based on
 > https://github.com/openai/symphony/blob/main/elixir/README.md
+
+### Option 3. Use the Rust implementation (GitHub Issues + Copilot CLI)
+
+A Rust implementation targeting **GitHub Issues** and **GitHub Copilot CLI** in ACP mode is
+fully specified and ready to build. It produces a single static binary with no runtime
+dependencies. See [rust/README.md](rust/README.md) for the spec goals, architecture, and
+implementation plan.
 
 ---
 
