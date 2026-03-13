@@ -404,8 +404,23 @@ fn effective_agent_command_prefers_agent_command_and_falls_back_to_copilot_comma
     let mut config = RustyConfig::default();
     config.copilot.command = "copilot-cli".to_string();
 
-    assert_eq!(effective_agent_command(&config), "copilot-cli");
+    // Fallback should include --acp --stdio flags
+    let cmd = effective_agent_command(&config);
+    assert!(
+        cmd.contains("--acp") && cmd.contains("--stdio"),
+        "fallback command must include ACP flags, got: {cmd}"
+    );
 
     config.agent.command = "custom-agent --stdio".to_string();
     assert_eq!(effective_agent_command(&config), "custom-agent --stdio");
+}
+
+#[test]
+fn effective_agent_command_default_config_includes_acp_flags() {
+    let config = RustyConfig::default();
+    let cmd = effective_agent_command(&config);
+    assert!(
+        cmd.contains("--acp") && cmd.contains("--stdio"),
+        "default effective command must include --acp --stdio, got: {cmd}"
+    );
 }

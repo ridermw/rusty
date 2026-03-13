@@ -117,12 +117,19 @@ pub fn resolve_path(value: &str) -> Result<String, ConfigError> {
 }
 
 /// Get the effective agent launch command.
-/// Prefers agent.command if non-default, otherwise falls back to copilot.command.
-pub fn effective_agent_command(config: &RustyConfig) -> &str {
+/// Prefers agent.command if non-default, otherwise falls back to copilot.command
+/// with --acp --stdio flags appended (required for ACP protocol communication).
+pub fn effective_agent_command(config: &RustyConfig) -> String {
     if config.agent.command != "copilot --acp --stdio" && !config.agent.command.is_empty() {
-        &config.agent.command
+        config.agent.command.clone()
     } else {
-        &config.copilot.command
+        // Fallback to copilot.command but ensure --acp --stdio flags are present
+        let base = &config.copilot.command;
+        if base.contains("--acp") && base.contains("--stdio") {
+            base.clone()
+        } else {
+            format!("{base} --acp --stdio")
+        }
     }
 }
 
