@@ -1,7 +1,7 @@
 pub mod acp_client;
 pub mod dynamic_tool;
 
-pub use acp_client::{AcpClient, AgentError, ChildGuard, JsonRpcMessage};
+pub use acp_client::{AcpClient, AgentError, AgentEvent, ChildGuard, JsonRpcMessage, TurnResult};
 
 use std::path::Path;
 use std::sync::Arc;
