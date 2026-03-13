@@ -406,6 +406,66 @@ async fn dispatch_creates_workspace_directory() {
     );
 }
 
+/// Verify that dispatching multiple issues concurrently creates all workspace directories.
+#[tokio::test]
+async fn concurrent_dispatch_creates_all_workspaces() {
+    use rusty::orchestrator::{run_orchestrator, OrchestratorMsg};
+    use rusty::workspace::hooks::default_shell_executor;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let mut config = test_config();
+    config.polling.interval_ms = 100;
+    config.agent.command = "echo".to_string();
+    config.agent.max_concurrent_agents = 3;
+
+    // Use all 3 test issues but mark the third as active so it gets dispatched
+    let mut issues = test_issues();
+    issues[2].state = "open".into();
+
+    let tracker = Arc::new(MemoryTracker::new(issues.clone())) as Arc<dyn Tracker>;
+    let state = OrchestratorState::new(100, 3);
+    let shell: Arc<dyn rusty::workspace::hooks::ShellExecutor> =
+        Arc::from(default_shell_executor());
+    let tmp = tempdir().unwrap();
+    let workspace_root = tmp.path().to_path_buf();
+    let check_root = workspace_root.clone();
+
+    let (tx, rx) = mpsc::channel::<OrchestratorMsg>(256);
+    let shutdown_tx = tx.clone();
+
+    let orch_handle = tokio::spawn(async move {
+        run_orchestrator(
+            state,
+            config,
+            tracker,
+            "Work on {{ issue.identifier }}".to_string(),
+            workspace_root,
+            shell,
+            rx,
+            tx,
+        )
+        .await;
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    let _ = shutdown_tx.send(OrchestratorMsg::Shutdown).await;
+    tokio::time::timeout(tokio::time::Duration::from_secs(2), orch_handle)
+        .await
+        .expect("orchestrator should shut down")
+        .expect("orchestrator task should not panic");
+
+    for issue in &issues {
+        let expected_ws = workspace::workspace_path(&check_root, &issue.identifier);
+        assert!(
+            expected_ws.exists(),
+            "workspace directory should be created for {} at {:?}",
+            issue.identifier,
+            expected_ws
+        );
+    }
+}
+
 #[tokio::test]
 #[ignore]
 async fn live_e2e_with_real_github_and_copilot() {
