@@ -1,4 +1,4 @@
-use symphony::logging::init_logging;
+use rusty::logging::init_logging;
 
 #[test]
 fn init_logging_stderr_only_succeeds() {

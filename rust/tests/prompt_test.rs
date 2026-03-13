@@ -1,7 +1,7 @@
-use symphony::config::ConfigError;
-use symphony::prompt::render_prompt;
-use symphony::tracker::memory::test_issue;
-use symphony::tracker::Issue;
+use rusty::config::ConfigError;
+use rusty::prompt::render_prompt;
+use rusty::tracker::memory::test_issue;
+use rusty::tracker::Issue;
 
 fn sample_issue() -> Issue {
     let mut issue = test_issue(

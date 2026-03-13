@@ -1,43 +1,183 @@
-# Symphony Rust
+# Rusty — Symphony for GitHub
 
-A Rust implementation of Symphony with full feature parity to the Elixir reference, adapted for **GitHub Issues** and **GitHub Copilot CLI in ACP mode**.
+A Rust implementation of [Symphony](../SPEC.md) that orchestrates coding agents against GitHub Issues using Copilot CLI.
 
 > [!WARNING]
-> This implementation is specified but not yet built. See `.specify/features/symphony-rust/` for the full spec, plan, and task breakdown.
+> Rusty runs coding agents autonomously. Use in trusted environments only.
+
+## Quick Start
+
+### Prerequisites
+
+- **Rust** stable toolchain ([install](https://rustup.rs/))
+- **GitHub CLI** (`gh`) — [install](https://cli.github.com/)
+- **Copilot CLI** (`copilot`) — [install](https://docs.github.com/en/copilot/github-copilot-in-the-cli)
+- **PowerShell 7+** (Windows only, for hooks) — [install](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows)
+- **`GITHUB_TOKEN`** environment variable with scopes: `repo`, `read:discussion`, `project`
+
+### 1. Build
+
+```bash
+cd rust
+
+# Debug build (fast compile, slower runtime)
+cargo build
+
+# Release build (slow compile, optimized binary)
+cargo build --release
+```
+
+| Build | Binary location | Use for |
+|---|---|---|
+| Debug | `target/debug/rusty` | Development, testing |
+| Release | `target/release/rusty` | Production, deployment |
+
+### 2. Setup
+
+Run the interactive setup checker to verify your environment:
+
+```bash
+# From the rust/ directory after building
+target/debug/rusty setup
+
+# Or from anywhere with the release binary
+./rusty setup
+```
+
+This checks: `GITHUB_TOKEN`, `WORKFLOW.md`, Copilot CLI, GitHub CLI, and the logs directory.
+
+### 3. Configure
+
+Copy the default workflow to wherever you'll run the binary:
+
+```bash
+# If running from rust/
+# WORKFLOW.md is already here
+
+# If deploying the release binary elsewhere
+cp rust/WORKFLOW.md /path/to/deploy/
+cp target/release/rusty /path/to/deploy/
+```
+
+Edit `WORKFLOW.md` to set your repo:
+
+```yaml
+tracker:
+  kind: github
+  owner: "your-username"
+  repo: "your-repo"
+```
+
+### 4. Run
+
+```bash
+# Start the daemon
+rusty run --yolo
+
+# Start with web dashboard on port 4000
+rusty run --yolo --port 4000
+
+# Custom workflow path and logs directory
+rusty run --yolo --port 4000 --logs-root ./my-logs path/to/WORKFLOW.md
+```
+
+### 5. Monitor
+
+- **Terminal**: Status prints to stderr automatically
+- **Web dashboard**: `http://127.0.0.1:4000/` (when `--port` is set)
+- **JSON API**: `GET http://127.0.0.1:4000/api/v1/state`
+- **Logs**: `./logs/rusty.log` (daily rotation)
+
+## CLI Reference
+
+```
+rusty — Rusty orchestration daemon for GitHub Issues + Copilot CLI
+
+Usage: rusty <COMMAND>
+
+Commands:
+  run    Start the orchestration daemon
+  setup  Interactive first-time setup
+  help   Print this message or the help of the given subcommand
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+### `rusty run`
+
+```
+Start the orchestration daemon
+
+Usage: rusty run [OPTIONS] [WORKFLOW_PATH]
+
+Arguments:
+  [WORKFLOW_PATH]  Path to WORKFLOW.md file [default: WORKFLOW.md]
+
+Options:
+      --port <PORT>            HTTP server port
+      --logs-root <LOGS_ROOT>  Log files directory [default: ./logs]
+      --yolo                   Acknowledge autonomous agent execution (required)
+  -h, --help                   Print help
+```
+
+### `rusty setup`
+
+Interactive environment checker. Verifies:
+1. `GITHUB_TOKEN` is set with sufficient length
+2. `WORKFLOW.md` exists (checks current dir and `rust/`)
+3. Copilot CLI (`copilot`) is installed
+4. GitHub CLI (`gh`) is installed
+5. Logs directory exists (creates if missing)
+
+## Development
+
+### Debug workflow
+
+```bash
+cd rust
+cargo build                        # Build debug binary
+cargo test                         # Run all tests
+cargo clippy -- -D warnings        # Lint
+cargo fmt --check                  # Format check
+target/debug/rusty setup           # Verify environment
+target/debug/rusty run --yolo      # Run with debug binary
+```
+
+### Release workflow
+
+```bash
+cd rust
+cargo build --release              # Build optimized binary
+cargo test                         # Verify tests pass
+target/release/rusty setup         # Verify environment
+target/release/rusty run --yolo    # Run with release binary
+```
+
+### Deploy checklist
+
+- [ ] `cargo build --release` succeeds
+- [ ] `cargo test` — all tests pass
+- [ ] `cargo clippy -- -D warnings` — clean
+- [ ] Copy `target/release/rusty` to deploy location
+- [ ] Copy `WORKFLOW.md` to same directory as binary
+- [ ] Set `GITHUB_TOKEN` in environment
+- [ ] Run `rusty setup` to verify
+- [ ] Run `rusty run --yolo` to start
 
 ## How it differs from the Elixir reference
 
-| Aspect | Elixir reference | Rust implementation |
+| Aspect | Elixir reference | Rusty |
 |---|---|---|
 | Issue tracker | Linear (GraphQL) | **GitHub Issues** (REST + GraphQL) |
 | Auth | `LINEAR_API_KEY` | `GITHUB_TOKEN` |
-| Tracker config | `tracker.project_slug` | `tracker.repo` (`owner/repo`) |
 | Coding agent | Codex app-server | **Copilot CLI** (`copilot --acp --stdio`) |
-| Agent protocol | JSON-RPC 2.0 over stdio | Same — JSON-RPC 2.0 over stdio (ACP) |
 | Dynamic tool | `linear_graphql` | **`github_graphql`** |
 | Runtime | Elixir/OTP/BEAM | **Single static binary**, no runtime deps |
-
-Tracker and agent boundaries are traits — adding Linear, Codex, Jira, or any other adapter is straightforward without touching the orchestrator.
-
-## Goals
-
-1. **Single static binary** — no runtime dependencies, deploy anywhere
-2. **Lower memory footprint** — important when running many concurrent agent sessions
-3. **Broader adoption** — Rust is more widely known than Elixir in the coding agent ecosystem
-4. **Full SPEC conformance** — both Core Conformance (§18.1) and Extension Conformance (§18.2)
-
-## Design Principles
-
-1. **Spec Fidelity** — `SPEC.md` is the source of truth for behavior; the Elixir implementation is the source of truth for practical patterns
-2. **Idiomatic Rust** — enums over stringly-typed state, `Result<T,E>` over exceptions, ownership over shared mutability
-3. **Trait-Based Abstraction** — every external boundary (`Tracker`, `WorkspaceManager`, `AgentSession`) is a trait
-4. **Test-Driven Development** — tests before or alongside implementation; 188+ test baseline from the Elixir suite
-5. **Observability First** — `tracing`-based structured logging with `issue_id`, `issue_identifier`, `session_id` on every relevant event
-6. **Zero-Downtime Config Reload** — `WORKFLOW.md` changes detected and applied without restart (core conformance, not optional)
+| Hooks (Windows) | N/A (Unix only) | **PowerShell 7+** via `ShellExecutor` trait |
 
 ## Architecture
-
-The orchestrator runs as a **single async task** owning all mutable state (no `Arc<Mutex<_>>`). Workers communicate back via `mpsc` channels. This preserves the single-authority invariant from the spec.
 
 ```
 GitHub Issues API → tracker/github/  → Issue (normalized)
@@ -54,104 +194,9 @@ Config: WORKFLOW.md → workflow/ → config/ (typed accessors, hot reload via n
 Web:    server/ (axum — optional, port-gated)
 ```
 
-**Core traits:**
-
-```rust
-#[async_trait]
-pub trait Tracker: Send + Sync {
-    async fn fetch_candidate_issues(&self, config: &TrackerConfig) -> Result<Vec<Issue>>;
-    async fn fetch_issue_states_by_ids(&self, ids: &[String]) -> Result<Vec<Issue>>;
-    async fn fetch_issues_by_states(&self, states: &[String], config: &TrackerConfig) -> Result<Vec<Issue>>;
-}
-
-pub trait WorkspaceManager: Send + Sync { /* create, remove, run_hook */ }
-
-#[async_trait]
-pub trait AgentSession: Send { /* initialize, start_thread, start_turn, stream_events, stop */ }
-```
-
-## Technology Stack
-
-| Purpose | Crate | Replaces (Elixir) |
-|---|---|---|
-| Async runtime | `tokio` | BEAM/OTP |
-| HTTP server | `axum` | Phoenix/Bandit |
-| HTTP client | `reqwest` | Req |
-| Serialization | `serde` + `serde_json` + `serde_yaml` | Jason + YamlElixir |
-| Templating | `liquid` | Solid |
-| Logging | `tracing` + `tracing-subscriber` | Logger + :logger_disk_log |
-| File watching | `notify` | GenServer polling |
-| CLI | `clap` | OptionParser |
-| Process mgmt | `tokio::process` | Port |
-| Testing | `mockall` | ExUnit + custom mocks |
-
 ## Configuration
 
-Same `WORKFLOW.md` format as the Elixir implementation (YAML front matter + Liquid prompt body), with GitHub-specific fields:
-
-```yaml
----
-tracker:
-  kind: github
-  repo: "owner/repo"           # required — replaces project_slug
-  api_key: $GITHUB_TOKEN       # defaults to GITHUB_TOKEN env var
-  active_states: ["open"]      # default
-  terminal_states: ["closed"]  # default
-  labels: []                   # optional label filters
-workspace:
-  root: ~/symphony-workspaces
-hooks:
-  after_create: |
-    git clone git@github.com:owner/repo.git .
-agent:
-  max_concurrent_agents: 10
-  max_turns: 20
-  command: "copilot --acp --stdio"   # default
-  approval_policy: "auto-approve"    # default
----
-
-You are working on GitHub issue {{ issue.identifier }}.
-
-Title: {{ issue.title }}
-Body: {{ issue.description }}
-```
-
-**CLI:**
-
-```bash
-./symphony WORKFLOW.md --i-understand-that-this-will-be-running-without-the-usual-guardrails
-./symphony WORKFLOW.md --port 4000 --logs-root ./log
-```
-
-## Implementation Phases
-
-| Phase | Stories | Status |
-|---|---|---|
-| 1. Foundation | Project skeleton, config schema, workflow loader, prompt builder | Spec complete |
-| 2. Tracker Integration | `Tracker` trait + `MemoryTracker`, GitHub Issues client | Spec complete |
-| 3. Workspace Management | Path safety, workspace manager, hooks | Spec complete |
-| 4. Orchestrator Core | State machine, dispatch, reconciliation, retry | Spec complete |
-| 5. Agent Integration | Copilot CLI ACP client, `github_graphql` tool | Spec complete |
-| 6. Observability | Structured logging, terminal dashboard, HTTP API | Spec complete |
-| 7. Extensions | SSH worker pool, `github_graphql` dynamic tool | Spec complete |
-| 8. CLI & Integration | Entry point, E2E tests, binary packaging | Spec complete |
-
-## Quality Gates
-
-- `cargo clippy -- -D warnings` — zero warnings
-- `cargo test` — all tests pass
-- `cargo fmt --check` — clean
-- No `unwrap()` in production code paths
-- All public APIs have doc comments
-
-## Status
-
-**Specification: complete.** Implementation has not started.
-
-- Spec: `.specify/features/symphony-rust/spec.md`
-- Plan: `.specify/features/symphony-rust/plan.md`
-- Tasks: `.specify/features/symphony-rust/tasks.md`
-- Constitution: `.specify/memory/constitution.md`
+See [`WORKFLOW.md`](WORKFLOW.md) for the full workflow configuration template.
 
 ## License
 

@@ -1,12 +1,47 @@
-//! CLI entry point for Symphony.
+//! CLI entry point for Rusty (Rusty orchestration daemon).
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::{error, info};
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Parser, Debug)]
-#[command(name = "symphony", about = "Symphony orchestration daemon")]
-pub struct Args {
+#[command(
+    name = "rusty",
+    version = VERSION,
+    about = "Rusty — Rusty orchestration daemon for GitHub Issues + Copilot CLI",
+    long_about = "Rusty is a long-running daemon that polls GitHub Issues, creates isolated\n\
+                  per-issue workspaces, and orchestrates Copilot CLI coding agent sessions.\n\n\
+                  Quick start:\n  \
+                    rusty setup              # Interactive first-time setup\n  \
+                    rusty run --yolo         # Start the daemon\n  \
+                    rusty run --yolo --port 4000  # Start with web dashboard\n\n\
+                  Docs: https://github.com/ridermw/rusty/blob/main/rust/README.md",
+    after_help = "Environment variables:\n  \
+                  GITHUB_TOKEN    GitHub API token (required, or set in WORKFLOW.md)\n  \
+                  RUST_LOG        Log level filter (default: info)\n\n\
+                  Examples:\n  \
+                  rusty run --yolo\n  \
+                  rusty run --yolo --port 4000 --logs-root ./logs\n  \
+                  rusty run --yolo path/to/WORKFLOW.md\n  \
+                  rusty setup"
+)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Start the orchestration daemon
+    Run(RunArgs),
+    /// Interactive first-time setup
+    Setup,
+}
+
+#[derive(Parser, Debug)]
+pub struct RunArgs {
     /// Path to WORKFLOW.md file
     #[arg(default_value = "WORKFLOW.md")]
     pub workflow_path: PathBuf,
@@ -15,37 +50,137 @@ pub struct Args {
     #[arg(long)]
     pub port: Option<u16>,
 
-    /// Log files directory
+    /// Log files directory (default: ./logs next to the executable)
     #[arg(long)]
     pub logs_root: Option<PathBuf>,
 
-    /// Required safety acknowledgement flag
-    #[arg(long = "i-understand-that-this-will-be-running-without-the-usual-guardrails")]
-    pub guardrails_acknowledged: bool,
+    /// Acknowledge autonomous agent execution (required to start)
+    #[arg(long)]
+    pub yolo: bool,
 }
 
 pub async fn run() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let cli = Cli::parse();
 
-    if !args.guardrails_acknowledged {
+    match cli.command {
+        Commands::Setup => run_setup().await,
+        Commands::Run(args) => run_daemon(args).await,
+    }
+}
+
+async fn run_setup() -> anyhow::Result<()> {
+    println!("🦀 Rusty Setup v{VERSION}");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+
+    // Check GITHUB_TOKEN
+    print!("1. Checking GITHUB_TOKEN... ");
+    match std::env::var("GITHUB_TOKEN") {
+        Ok(t) if !t.is_empty() => println!("✅ set ({} chars)", t.len()),
+        _ => {
+            println!("❌ not set");
+            println!("   Set it with: $env:GITHUB_TOKEN = \"ghp_your_token_here\"");
+            println!("   Required scopes: repo, read:discussion, project");
+        }
+    }
+
+    // Check for WORKFLOW.md
+    print!("2. Checking WORKFLOW.md... ");
+    if std::path::Path::new("WORKFLOW.md").exists() {
+        println!("✅ found in current directory");
+    } else if std::path::Path::new("rust/WORKFLOW.md").exists() {
+        println!("⚠️  found at rust/WORKFLOW.md but not in current directory");
+        println!("   Copy it: copy rust\\WORKFLOW.md .\\WORKFLOW.md");
+    } else {
+        println!("❌ not found");
+        println!("   Create one or copy the template from rust/WORKFLOW.md");
+    }
+
+    // Check for Copilot CLI
+    print!("3. Checking Copilot CLI... ");
+    match tokio::process::Command::new("copilot")
+        .arg("--version")
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => {
+            let ver = String::from_utf8_lossy(&output.stdout);
+            println!("✅ {}", ver.trim());
+        }
+        _ => {
+            println!("❌ not found");
+            println!("   Install: https://docs.github.com/en/copilot/github-copilot-in-the-cli");
+        }
+    }
+
+    // Check for gh CLI
+    print!("4. Checking GitHub CLI... ");
+    match tokio::process::Command::new("gh")
+        .arg("--version")
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => {
+            let ver = String::from_utf8_lossy(&output.stdout);
+            let first_line = ver.lines().next().unwrap_or("unknown");
+            println!("✅ {first_line}");
+        }
+        _ => {
+            println!("❌ not found");
+            println!("   Install: https://cli.github.com/");
+        }
+    }
+
+    // Check logs directory
+    let logs_dir = PathBuf::from("logs");
+    print!("5. Checking logs directory... ");
+    if logs_dir.exists() {
+        println!("✅ ./logs/ exists");
+    } else {
+        println!("📁 creating ./logs/");
+        std::fs::create_dir_all(&logs_dir)?;
+    }
+
+    println!();
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Ready to run:");
+    println!("  rusty run --yolo");
+    println!("  rusty run --yolo --port 4000   # with web dashboard");
+    println!();
+
+    Ok(())
+}
+
+async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
+    if !args.yolo {
         anyhow::bail!(
-            "Symphony requires the --i-understand-that-this-will-be-running-without-the-usual-guardrails flag.\n\
-             This acknowledges that Symphony will run coding agents autonomously."
+            "Rusty requires the --yolo flag to start.\n\
+             This acknowledges that Rusty will run coding agents autonomously.\n\n\
+             Usage: rusty run --yolo"
         );
     }
 
-    let _log_guard = crate::logging::init_logging(args.logs_root.as_deref())
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Default logs_root to ./logs next to the executable
+    let logs_root = args.logs_root.unwrap_or_else(|| PathBuf::from("logs"));
 
-    info!(workflow = %args.workflow_path.display(), port = ?args.port, "Symphony starting");
+    let _log_guard =
+        crate::logging::init_logging(Some(&logs_root)).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("🦀 Rusty v{VERSION} starting...");
+    info!(workflow = %args.workflow_path.display(), port = ?args.port, "Rusty starting");
 
     if !args.workflow_path.exists() {
-        anyhow::bail!("Workflow file not found: {}", args.workflow_path.display());
+        anyhow::bail!(
+            "Workflow file not found: {}\n\n\
+             Run 'rusty setup' to check your configuration, or provide a path:\n  \
+             rusty run --yolo path/to/WORKFLOW.md",
+            args.workflow_path.display()
+        );
     }
 
     let workflow = crate::workflow::load_workflow(&args.workflow_path)?;
 
-    let config: crate::config::schema::SymphonyConfig =
+    let config: crate::config::schema::RustyConfig =
         serde_yaml::from_value(serde_yaml::to_value(&workflow.config)?)?;
 
     crate::config::validate_dispatch_config(&config)?;
@@ -54,10 +189,6 @@ pub async fn run() -> anyhow::Result<()> {
     let (orch_tx, mut orch_rx) =
         tokio::sync::mpsc::channel::<crate::orchestrator::OrchestratorMsg>(256);
 
-    // Spawn a minimal orchestrator message consumer that handles snapshot/refresh
-    // requests. Without this, API calls would fill the channel buffer and hang.
-    // The full orchestrator loop (with dispatch/reconciliation) will replace this
-    // when wired end-to-end.
     tokio::spawn(async move {
         use crate::orchestrator::state::OrchestratorState;
         use crate::orchestrator::{build_snapshot, OrchestratorMsg};
@@ -78,7 +209,6 @@ pub async fn run() -> anyhow::Result<()> {
 
     if let Some(port) = args.port.or(config.server.port) {
         let tx = orch_tx.clone();
-        // Use a oneshot to detect server bind failures before continuing
         let (server_ready_tx, server_ready_rx) =
             tokio::sync::oneshot::channel::<Result<(), String>>();
         tokio::spawn(async move {
@@ -97,16 +227,19 @@ pub async fn run() -> anyhow::Result<()> {
                 }
             }
         });
-        // Wait for bind result — fail fast if port is unavailable
         match server_ready_rx.await {
-            Ok(Ok(())) => info!(port, "HTTP server started"),
+            Ok(Ok(())) => {
+                println!("🌐 Dashboard: http://127.0.0.1:{port}/");
+                info!(port, "HTTP server started");
+            }
             Ok(Err(e)) => anyhow::bail!("HTTP server failed to bind port {port}: {e}"),
             Err(_) => anyhow::bail!("HTTP server task died before binding"),
         }
     }
 
-    info!("Symphony running. Press Ctrl+C to stop.");
+    println!("✅ Rusty is running. Press Ctrl+C to stop.");
     tokio::signal::ctrl_c().await?;
+    println!("\n🛑 Shutdown signal received");
     info!("Shutdown signal received");
 
     Ok(())

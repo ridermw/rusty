@@ -75,7 +75,7 @@ impl GitHubClient {
                 .get(&url)
                 .header("Authorization", format!("Bearer {token}"))
                 .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "symphony-rust/0.1");
+                .header("User-Agent", "rusty/0.1");
 
             if let Some(etag) = self.etag_cache.read().unwrap().get(&url).cloned() {
                 request = request.header("If-None-Match", etag);
@@ -177,7 +177,7 @@ impl GitHubClient {
                 .get(&url)
                 .header("Authorization", format!("Bearer {token}"))
                 .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "symphony-rust/0.1")
+                .header("User-Agent", "rusty/0.1")
                 .send()
                 .await
                 .map_err(|err| TrackerError::ApiRequest(err.to_string()))?;

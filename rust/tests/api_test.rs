@@ -3,11 +3,11 @@ use axum::{
     http::{Request, StatusCode},
 };
 use chrono::{TimeZone, Utc};
+use rusty::orchestrator::state::{OrchestratorState, RunningEntry, TokenTotals};
+use rusty::orchestrator::{build_snapshot, OrchestratorMsg, OrchestratorSnapshot};
+use rusty::server::api::build_router;
+use rusty::tracker::Issue;
 use serde_json::Value;
-use symphony::orchestrator::state::{OrchestratorState, RunningEntry, TokenTotals};
-use symphony::orchestrator::{build_snapshot, OrchestratorMsg, OrchestratorSnapshot};
-use symphony::server::api::build_router;
-use symphony::tracker::Issue;
 use tokio::sync::mpsc;
 use tower::ServiceExt; // for oneshot
 
@@ -194,7 +194,7 @@ async fn get_root_returns_200_html() {
         .await
         .expect("body bytes");
     let html = String::from_utf8(bytes.to_vec()).expect("utf8 html");
-    assert!(html.contains("<h1>Symphony Dashboard</h1>"));
+    assert!(html.contains("<h1>Rusty Dashboard</h1>"));
     assert!(html.contains("/api/v1/state"));
 }
 

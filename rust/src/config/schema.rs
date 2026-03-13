@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-pub struct SymphonyConfig {
+pub struct RustyConfig {
     pub tracker: TrackerConfig,
     pub polling: PollingConfig,
     pub workspace: WorkspaceConfig,
@@ -140,7 +140,7 @@ impl Default for ServerConfig {
 
 fn default_workspace_root() -> String {
     std::env::temp_dir()
-        .join("symphony_workspaces")
+        .join("rusty_workspaces")
         .to_string_lossy()
         .into_owned()
 }

@@ -2,12 +2,12 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use symphony::agent::{run_agent_attempt, WorkerResult};
-use symphony::config::schema::SymphonyConfig;
-use symphony::tracker::memory::test_issue;
-use symphony::tracker::Issue;
-use symphony::workspace::hooks::{default_shell_executor, ShellExecutor};
-use symphony::workspace::{workspace_path, WorkspaceError};
+use rusty::agent::{run_agent_attempt, WorkerResult};
+use rusty::config::schema::RustyConfig;
+use rusty::tracker::memory::test_issue;
+use rusty::tracker::Issue;
+use rusty::workspace::hooks::{default_shell_executor, ShellExecutor};
+use rusty::workspace::{workspace_path, WorkspaceError};
 use tempfile::tempdir;
 use tokio::sync::mpsc;
 
@@ -51,7 +51,7 @@ async fn run_agent_attempt_with_valid_config_creates_workspace_and_returns_compl
     let result = run_agent_attempt(
         issue.clone(),
         None,
-        SymphonyConfig::default(),
+        RustyConfig::default(),
         "{{ issue.identifier }}".to_string(),
         workspace_root.path().to_path_buf(),
         Arc::new(UnexpectedExecutor),
@@ -73,7 +73,7 @@ async fn run_agent_attempt_with_bad_workspace_root_returns_failed() {
     let result = run_agent_attempt(
         sample_issue(),
         None,
-        SymphonyConfig::default(),
+        RustyConfig::default(),
         "{{ issue.identifier }}".to_string(),
         bad_root,
         Arc::new(UnexpectedExecutor),
@@ -104,7 +104,7 @@ async fn after_run_hook_is_called_even_when_prompt_rendering_fails() {
     let workspace_root = tempdir().expect("create temp dir");
     let issue = sample_issue();
     let marker_name = "runner-after-run.marker";
-    let mut config = SymphonyConfig::default();
+    let mut config = RustyConfig::default();
     config.hooks.after_run = Some(marker_script(marker_name));
     config.hooks.timeout_ms = 5_000;
 

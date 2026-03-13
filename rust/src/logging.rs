@@ -14,7 +14,7 @@ pub fn init_logging(log_dir: Option<&Path>) -> Result<Option<WorkerGuard>, Box<d
     if let Some(dir) = log_dir {
         std::fs::create_dir_all(dir)?;
 
-        let file_appender = tracing_appender::rolling::daily(dir, "symphony.log");
+        let file_appender = tracing_appender::rolling::daily(dir, "rusty.log");
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
         let file_layer = fmt::layer()
@@ -50,7 +50,7 @@ pub fn init_logging(log_dir: Option<&Path>) -> Result<Option<WorkerGuard>, Box<d
     }
 }
 
-/// Symphony logging context is attached with standard `tracing` spans and fields.
+/// Rusty logging context is attached with standard `tracing` spans and fields.
 ///
 /// Usage:
 /// ```no_run

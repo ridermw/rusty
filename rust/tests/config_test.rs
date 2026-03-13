@@ -1,13 +1,13 @@
 use std::{collections::HashMap, env, path::PathBuf};
 
-use symphony::config::schema::SymphonyConfig;
-use symphony::config::{
+use rusty::config::schema::RustyConfig;
+use rusty::config::{
     expand_home, normalize_state_concurrency, resolve_env_value, validate_dispatch_config,
     ConfigError,
 };
 
-fn valid_config() -> SymphonyConfig {
-    let mut config = SymphonyConfig::default();
+fn valid_config() -> RustyConfig {
+    let mut config = RustyConfig::default();
     config.tracker.kind = Some("github".to_string());
     config.tracker.repo = Some("owner/repo".to_string());
     config.tracker.api_key = Some("token".to_string());
@@ -16,9 +16,9 @@ fn valid_config() -> SymphonyConfig {
 
 #[test]
 fn config_defaults_are_correct() {
-    let config = SymphonyConfig::default();
+    let config = RustyConfig::default();
     let expected_workspace_root = std::env::temp_dir()
-        .join("symphony_workspaces")
+        .join("rusty_workspaces")
         .to_string_lossy()
         .into_owned();
 
@@ -102,7 +102,7 @@ fn expand_home_leaves_absolute_path_unchanged() {
 
 #[test]
 fn validate_dispatch_config_rejects_missing_tracker_kind() {
-    let err = validate_dispatch_config(&SymphonyConfig::default()).unwrap_err();
+    let err = validate_dispatch_config(&RustyConfig::default()).unwrap_err();
     assert!(matches!(
         err,
         ConfigError::ValidationError(message) if message == "tracker.kind is required"
@@ -111,7 +111,7 @@ fn validate_dispatch_config_rejects_missing_tracker_kind() {
 
 #[test]
 fn validate_dispatch_config_rejects_unsupported_tracker_kind() {
-    let mut config = SymphonyConfig::default();
+    let mut config = RustyConfig::default();
     config.tracker.kind = Some("linear".to_string());
 
     let err = validate_dispatch_config(&config).unwrap_err();
@@ -124,7 +124,7 @@ fn validate_dispatch_config_rejects_unsupported_tracker_kind() {
 
 #[test]
 fn validate_dispatch_config_rejects_missing_tracker_repo() {
-    let mut config = SymphonyConfig::default();
+    let mut config = RustyConfig::default();
     config.tracker.kind = Some("github".to_string());
     config.tracker.api_key = Some("token".to_string());
 
@@ -164,7 +164,7 @@ tracker:
   repo: owner/repo
 "#;
 
-    let config: SymphonyConfig = serde_yaml::from_str(yaml).unwrap();
+    let config: RustyConfig = serde_yaml::from_str(yaml).unwrap();
 
     assert_eq!(config.tracker.kind.as_deref(), Some("github"));
     assert_eq!(config.tracker.repo.as_deref(), Some("owner/repo"));

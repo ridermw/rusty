@@ -1,6 +1,6 @@
 pub mod schema;
 
-use self::schema::SymphonyConfig;
+use self::schema::RustyConfig;
 use std::{collections::HashMap, env, path::PathBuf};
 use thiserror::Error;
 
@@ -57,7 +57,7 @@ pub fn resolve_path(value: &str) -> Result<String, ConfigError> {
     }
 }
 
-pub fn validate_dispatch_config(config: &SymphonyConfig) -> Result<(), ConfigError> {
+pub fn validate_dispatch_config(config: &RustyConfig) -> Result<(), ConfigError> {
     match &config.tracker.kind {
         Some(kind) if kind == "github" => {}
         Some(kind) => {

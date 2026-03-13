@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info, info_span, warn, Instrument};
 
-use crate::config::schema::{HooksConfig, SymphonyConfig};
+use crate::config::schema::{HooksConfig, RustyConfig};
 use crate::prompt;
 use crate::tracker::Issue;
 use crate::workspace::{
@@ -32,7 +32,7 @@ pub enum WorkerResult {
 pub async fn run_agent_attempt(
     issue: Issue,
     attempt: Option<u32>,
-    config: SymphonyConfig,
+    config: RustyConfig,
     prompt_template: String,
     workspace_root: std::path::PathBuf,
     shell_executor: Arc<dyn ShellExecutor>,

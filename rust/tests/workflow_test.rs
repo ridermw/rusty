@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::Path;
 
+use rusty::config::ConfigError;
+use rusty::workflow::store::WorkflowStore;
+use rusty::workflow::{load_workflow, parse_workflow};
 use serde_yaml::{Mapping, Value};
-use symphony::config::ConfigError;
-use symphony::workflow::store::WorkflowStore;
-use symphony::workflow::{load_workflow, parse_workflow};
 use tempfile::tempdir;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout, Duration};
