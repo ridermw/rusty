@@ -4,16 +4,16 @@ tracker:
   owner: "ridermw"
   repo: "rusty"
   active_issue_labels:
-    - "todo"
-    - "in_progress"
-    - "human_review"
-    - "merging"
-    - "rework"
+    - "Todo"
+    - "InProgress"
+    - "HumanReview"
+    - "Merging"
+    - "Rework"
   terminal_issue_labels:
-    - "done"
+    - "Done"
     - "closed"
-    - "cancelled"
-    - "duplicate"
+    - "Cancelled"
+    - "Duplicate"
   project:
     enabled: false
     owner_type: "user"
@@ -113,33 +113,33 @@ The agent should be able to use GitHub through `gh` and Copilot CLI through `cop
 2. `commit`: produce clean, logical commits during implementation.
 3. `push`: keep remote branch current and publish updates.
 4. `pull`: keep branch updated with latest `origin/main` before handoff.
-5. `land`: when the issue reaches `merging`, explicitly open and follow `.github/skills/land/SKILL.md`, which includes the land loop.
+5. `land`: when the issue reaches `Merging`, explicitly open and follow `.github/skills/land/SKILL.md`, which includes the land loop.
 6. `copilot`: use Copilot CLI for repository understanding, code changes, test scaffolding, and review assistance when it improves speed or quality.
 
 ## Status map
 
 Use labels as the primary state mechanism unless a GitHub Project status field is configured and writable.
 
-1. `backlog`
+1. `Backlog`
    Out of scope for this workflow. Do not modify.
 
-2. `todo`
-   Queued. Immediately transition to `in_progress` before active work.
-   If a PR is already attached, treat as feedback or rework loop. Run the full PR feedback sweep, address or explicitly push back, revalidate, and return to `human_review`.
+2. `Todo`
+   Queued. Immediately transition to `InProgress` before active work.
+   If a PR is already attached, treat as feedback or rework loop. Run the full PR feedback sweep, address or explicitly push back, revalidate, and return to `HumanReview`.
 
-3. `in_progress`
+3. `InProgress`
    Implementation actively underway.
 
-4. `human_review`
+4. `HumanReview`
    PR is attached and validated. Waiting on human approval.
 
-5. `merging`
+5. `Merging`
    Approved by human. Execute the `land` skill flow. Do not call `gh pr merge` directly unless the land skill explicitly requires it.
 
-6. `rework`
+6. `Rework`
    Reviewer requested changes. Planning plus implementation required.
 
-7. `done`
+7. `Done`
    Terminal state. No further action required.
 
 ## Step 0: Determine current issue state and route
@@ -147,26 +147,26 @@ Use labels as the primary state mechanism unless a GitHub Project status field i
 1. Fetch the issue by explicit issue number.
 2. Read the current state from labels first, then project status if configured.
 3. Route to the matching flow:
-   1. `backlog`
-      Do not modify issue content or state. Stop and wait for human to move it to `todo`.
-   2. `todo`
-      Immediately move to `in_progress`, then ensure bootstrap workpad comment exists, then start execution flow.
+   1. `Backlog`
+      Do not modify issue content or state. Stop and wait for human to move it to `Todo`.
+   2. `Todo`
+      Immediately move to `InProgress`, then ensure bootstrap workpad comment exists, then start execution flow.
       If a PR is already attached, start by reviewing all open PR comments and deciding required changes versus explicit pushback responses.
-   3. `in_progress`
+   3. `InProgress`
       Continue execution flow from current workpad comment.
-   4. `human_review`
+   4. `HumanReview`
       Wait and poll for decision or review updates.
-   5. `merging`
+   5. `Merging`
       On entry, open and follow `.github/skills/land/SKILL.md`. Do not call `gh pr merge` directly unless that skill requires it.
-   6. `rework`
+   6. `Rework`
       Run rework flow.
-   7. `done`
+   7. `Done`
       Do nothing and shut down.
 4. Check whether a PR already exists for the current branch and whether it is closed.
    1. If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non reusable for this run.
    2. Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
-5. For `todo` issues, do startup sequencing in this exact order:
-   1. Update labels or project state to `in_progress`
+5. For `Todo` issues, do startup sequencing in this exact order:
+   1. Update labels or project state to `InProgress`
    2. Find or create `## Rusty Workpad` bootstrap comment
    3. Only then begin analysis, planning, and implementation work
 6. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
@@ -178,7 +178,7 @@ Use labels as the primary state mechanism unless a GitHub Project status field i
    2. Reuse that comment if found
    3. If not found, create one workpad comment and use it for all updates
    4. Persist the workpad comment ID and only write progress updates to that ID
-2. If arriving from `todo`, do not delay on additional status transitions. The issue should already be `in_progress` before this step begins.
+2. If arriving from `Todo`, do not delay on additional status transitions. The issue should already be `InProgress` before this step begins.
 3. Immediately reconcile the workpad before new edits:
    1. Check off items that are already done
    2. Expand or fix the plan so it is comprehensive for current scope
@@ -200,7 +200,7 @@ Use labels as the primary state mechanism unless a GitHub Project status field i
 
 ## PR feedback sweep protocol
 
-When an issue has an attached PR, run this protocol before moving to `human_review`:
+When an issue has an attached PR, run this protocol before moving to `HumanReview`:
 
 1. Identify the PR number from linked issues, branch metadata, or issue references.
 2. Gather feedback from all channels:
@@ -219,8 +219,8 @@ When an issue has an attached PR, run this protocol before moving to `human_revi
 Use this only when completion is blocked by missing required tools or missing auth or permissions that cannot be resolved in session.
 
 1. GitHub is not a valid blocker by default. Always try fallback strategies first, then continue publish or review flow.
-2. Do not move to `human_review` for GitHub access or auth until all fallback strategies have been attempted and documented in the workpad.
-3. If a non GitHub required tool is missing, or required non GitHub auth is unavailable, move the issue to `human_review` with a short blocker brief in the workpad that includes:
+2. Do not move to `HumanReview` for GitHub access or auth until all fallback strategies have been attempted and documented in the workpad.
+3. If a non GitHub required tool is missing, or required non GitHub auth is unavailable, move the issue to `HumanReview` with a short blocker brief in the workpad that includes:
    1. what is missing
    2. why it blocks required acceptance or validation
    3. exact human action needed to unblock
@@ -229,7 +229,7 @@ Use this only when completion is blocked by missing required tools or missing au
 ## Step 2: Execution phase
 
 1. Determine current repo state, including branch, `git status`, and `HEAD`, and verify the kickoff pull sync result is already recorded in the workpad before implementation continues.
-2. If current issue state is `todo`, move it to `in_progress`. Otherwise leave the current state unchanged.
+2. If current issue state is `Todo`, move it to `InProgress`. Otherwise leave the current state unchanged.
 3. Load the existing workpad comment and treat it as the active execution checklist.
    1. Edit it liberally whenever reality changes, including scope, risks, validation approach, or discovered tasks.
 4. Implement against the hierarchical TODOs and keep the comment current:
@@ -238,7 +238,7 @@ Use this only when completion is blocked by missing required tools or missing au
    3. Keep parent and child structure intact as scope evolves
    4. Update the workpad immediately after each meaningful milestone
    5. Never leave completed work unchecked in the plan
-   6. For issues that started as `todo` with an attached PR, run the full PR feedback sweep protocol immediately after kickoff and before new feature work
+   6. For issues that started as `Todo` with an attached PR, run the full PR feedback sweep protocol immediately after kickoff and before new feature work
 5. Run validation and tests required for the scope.
    1. Mandatory gate: execute all issue provided `Validation`, `Test Plan`, or `Testing` requirements when present
    2. Prefer a targeted proof that directly demonstrates the behavior you changed
@@ -257,38 +257,38 @@ Use this only when completion is blocked by missing required tools or missing au
     3. Do not include PR URL in the workpad comment if it is already linked from issue metadata or cross reference
     4. Add a short `### Confusions` section at the bottom when any part of task execution was unclear
     5. Do not post any additional completion summary comment
-11. Before moving to `human_review`, poll PR feedback and checks:
+11. Before moving to `HumanReview`, poll PR feedback and checks:
     1. Read any manual QA or reviewer validation notes and use them to sharpen runtime coverage
     2. Run the full PR feedback sweep protocol
     3. Confirm PR checks are passing after the latest changes
     4. Confirm every required issue provided validation item is explicitly marked complete in the workpad
     5. Repeat this check, address, and verify loop until no outstanding comments remain and checks are fully passing
     6. Re open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work
-12. Only then move issue to `human_review`.
-    1. Exception: if blocked by missing required non GitHub tools or auth, move to `human_review` with the blocker brief and explicit unblock actions
-13. For `todo` issues that already had a PR attached at kickoff:
+12. Only then move issue to `HumanReview`.
+    1. Exception: if blocked by missing required non GitHub tools or auth, move to `HumanReview` with the blocker brief and explicit unblock actions
+13. For `Todo` issues that already had a PR attached at kickoff:
     1. Ensure all existing PR feedback was reviewed and resolved, including inline review comments
     2. Ensure branch was pushed with any required updates
-    3. Then move to `human_review`
+    3. Then move to `HumanReview`
 
 ## Step 3: Human review and merge handling
 
-1. When the issue is in `human_review`, do not code or change issue content.
+1. When the issue is in `HumanReview`, do not code or change issue content.
 2. Poll for updates as needed, including GitHub PR review comments from humans and bots.
-3. If review feedback requires changes, move the issue to `rework` and follow the rework flow.
-4. If approved, move the issue to `merging`.
-5. When the issue is in `merging`, open and follow `.github/skills/land/SKILL.md`, then run the land skill in a loop until the PR is merged. Do not call `gh pr merge` directly unless the land skill requires it.
-6. After merge is complete, move the issue to `done`.
+3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
+4. If approved, move the issue to `Merging`.
+5. When the issue is in `Merging`, open and follow `.github/skills/land/SKILL.md`, then run the land skill in a loop until the PR is merged. Do not call `gh pr merge` directly unless the land skill requires it.
+6. After merge is complete, move the issue to `Done`.
 
 ## Step 4: Rework handling
 
-1. Treat `rework` as a full approach reset, not incremental patching.
+1. Treat `Rework` as a full approach reset, not incremental patching.
 2. Re read the full issue body and all human comments. Explicitly identify what will be done differently this attempt.
 3. Close the existing PR tied to the issue.
 4. Remove the existing `## Rusty Workpad` comment from the issue.
 5. Create a fresh branch from `origin/main`.
 6. Start over from the normal kickoff flow:
-   1. If current issue state is `todo`, move it to `in_progress`. Otherwise keep the current state.
+   1. If current issue state is `Todo`, move it to `InProgress`. Otherwise keep the current state.
    2. Create a new bootstrap `## Rusty Workpad` comment.
    3. Build a fresh plan and checklist and execute end to end.
 
@@ -306,14 +306,14 @@ Use this only when completion is blocked by missing required tools or missing au
 
 1. If the branch PR is already closed or merged, do not reuse that branch or prior implementation state for continuation.
 2. For closed or merged branch PRs, create a new branch from `origin/main` and restart from reproduction and planning as if starting fresh.
-3. If issue state is `backlog`, do not modify it. Wait for human to move to `todo`.
+3. If issue state is `Backlog`, do not modify it. Wait for human to move to `Todo`.
 4. Do not edit the issue body for planning or progress tracking.
 5. Use exactly one persistent workpad comment, `## Rusty Workpad`, per issue.
 6. If comment editing is unavailable in session, use `gh api` or `gh issue comment` based fallback scripts. Only report blocked if both direct editing and script based editing are unavailable.
 7. Temporary proof edits are allowed only for local verification and must be reverted before commit.
 8. If out of scope improvements are found, create a separate GitHub issue rather than expanding current scope, and include a clear title, description, acceptance criteria, and a reference back to the current issue.
-9. Do not move to `human_review` unless the completion bar is satisfied.
-10. In `human_review`, do not make changes. Wait and poll.
+9. Do not move to `HumanReview` unless the completion bar is satisfied.
+10. In `HumanReview`, do not make changes. Wait and poll.
 11. If state is terminal, do nothing and shut down.
 12. Keep issue text concise, specific, and reviewer oriented.
 13. If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action.
@@ -322,14 +322,14 @@ Use this only when completion is blocked by missing required tools or missing au
 
 Use these labels if they do not already exist:
 
-1. `backlog`
-2. `todo`
-3. `in_progress`
-4. `human_review`
-5. `merging`
-6. `rework`
-7. `done`
-8. `blocked`
+1. `Backlog`
+2. `Todo`
+3. `InProgress`
+4. `HumanReview`
+5. `Merging`
+6. `Rework`
+7. `Done`
+8. `Blocked`
 9. `rusty`
 
 ## Suggested GitHub CLI operations
@@ -340,10 +340,10 @@ Use these commands or their API equivalents as the default control plane:
    `gh issue view <number> --repo ridermw/rusty --json number,title,body,state,labels,comments,url`
 
 2. Add label\
-   `gh issue edit <number> --repo ridermw/rusty --add-label in_progress`
+   `gh issue edit <number> --repo ridermw/rusty --add-label InProgress`
 
 3. Remove label\
-   `gh issue edit <number> --repo ridermw/rusty --remove-label todo`
+   `gh issue edit <number> --repo ridermw/rusty --remove-label Todo`
 
 4. Create PR\
    `gh pr create --repo ridermw/rusty --fill`
