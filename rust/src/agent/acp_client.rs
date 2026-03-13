@@ -401,6 +401,22 @@ impl AcpClient {
                                         reason: err.to_string(),
                                     });
                                 }
+
+                                // Extract usage from prompt response
+                                if let Some(usage) = msg.result.as_ref().and_then(|r| r.get("usage")) {
+                                    let input = usage.get("input_tokens")
+                                        .or_else(|| usage.get("inputTokens"))
+                                        .and_then(Value::as_u64).unwrap_or(0);
+                                    let output = usage.get("output_tokens")
+                                        .or_else(|| usage.get("outputTokens"))
+                                        .and_then(Value::as_u64).unwrap_or(0);
+                                    let total = usage.get("total_tokens")
+                                        .or_else(|| usage.get("totalTokens"))
+                                        .and_then(Value::as_u64).unwrap_or(0);
+                                    tracing::info!(input, output, total, "token usage from prompt response");
+                                    on_event(AgentEvent::TokenUsage { input, output, total });
+                                }
+
                                 let stop_reason = msg
                                     .result
                                     .as_ref()
@@ -557,7 +573,31 @@ pub fn classify_event(msg: &JsonRpcMessage) -> AgentEvent {
             // General update — inspect payload to determine type
             let params = msg.params.as_ref();
 
-            // Check for token usage
+            // Check for usage_update (ACP schema: params.update.sessionUpdate)
+            let update_type = params
+                .and_then(|p| p.get("update"))
+                .and_then(|u| u.get("sessionUpdate"))
+                .and_then(Value::as_str);
+
+            if update_type == Some("usage_update") {
+                let update = params.and_then(|p| p.get("update"));
+                let used = update
+                    .and_then(|u| u.get("used"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let size = update
+                    .and_then(|u| u.get("size"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                tracing::debug!(used, size, "context window usage update");
+                return AgentEvent::TokenUsage {
+                    input: used,
+                    output: 0,
+                    total: used,
+                };
+            }
+
+            // Check for token usage in other shapes
             if params.is_some_and(|p| p.get("tokenUsage").is_some() || p.get("usage").is_some()) {
                 let (input, output, total) = extract_token_usage(msg);
                 return AgentEvent::TokenUsage {
