@@ -278,8 +278,8 @@ impl AcpClient {
     pub async fn create_session(
         &mut self,
         cwd: &Path,
-        approval_policy: &str,
-        sandbox: Option<&str>,
+        _approval_policy: &str,
+        _sandbox: Option<&str>,
         read_timeout_ms: u64,
     ) -> Result<String, AgentError> {
         let params = serde_json::json!({
@@ -335,10 +335,10 @@ impl AcpClient {
         &mut self,
         session_id: &str,
         prompt: &str,
-        title: &str,
-        cwd: &Path,
-        approval_policy: &str,
-        sandbox_policy: Option<&serde_json::Value>,
+        _title: &str,
+        _cwd: &Path,
+        _approval_policy: &str,
+        _sandbox_policy: Option<&serde_json::Value>,
         turn_timeout_ms: u64,
         mut on_event: impl FnMut(AgentEvent),
     ) -> Result<TurnResult, AgentError> {
@@ -487,10 +487,8 @@ pub fn classify_event(msg: &JsonRpcMessage) -> AgentEvent {
         "session/request_permission" => {
             // Could be approval or user input — check payload
             let params = msg.params.as_ref();
-            let is_user_input = params
-                .and_then(|p| p.get("type"))
-                .and_then(Value::as_str)
-                .map_or(false, |t| t == "userInput");
+            let is_user_input =
+                params.and_then(|p| p.get("type")).and_then(Value::as_str) == Some("userInput");
             if is_user_input {
                 AgentEvent::UserInputRequired
             } else {
@@ -514,9 +512,7 @@ pub fn classify_event(msg: &JsonRpcMessage) -> AgentEvent {
             let params = msg.params.as_ref();
 
             // Check for token usage
-            if params.map_or(false, |p| {
-                p.get("tokenUsage").is_some() || p.get("usage").is_some()
-            }) {
+            if params.is_some_and(|p| p.get("tokenUsage").is_some() || p.get("usage").is_some()) {
                 let (input, output, total) = extract_token_usage(msg);
                 return AgentEvent::TokenUsage {
                     input,
