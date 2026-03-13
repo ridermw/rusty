@@ -138,11 +138,12 @@ pub async fn run_agent_attempt(
         )
         .await;
 
-        let command_parts: Vec<&str> = config.agent.command.split_whitespace().collect();
+        let effective_cmd = crate::config::effective_agent_command(&config);
+        let command_parts: Vec<&str> = effective_cmd.split_whitespace().collect();
         let (cmd, args): (&str, &[&str]) = match command_parts.split_first() {
             Some((cmd, args)) => (*cmd, args),
             None => {
-                warn!("agent.command is empty, falling back to copilot --acp --stdio");
+                warn!("effective agent command is empty, falling back to copilot --acp --stdio");
                 ("copilot", &["--acp", "--stdio"])
             }
         };
