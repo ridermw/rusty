@@ -160,11 +160,20 @@ async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
         );
     }
 
-    // Default logs_root to ./logs next to the executable
+    // Default logs_root to ./logs next to the executable, create if needed
     let logs_root = args.logs_root.unwrap_or_else(|| PathBuf::from("logs"));
+    if let Err(e) = std::fs::create_dir_all(&logs_root) {
+        eprintln!(
+            "Warning: could not create logs directory {}: {e}",
+            logs_root.display()
+        );
+        eprintln!("Continuing with stderr-only logging.");
+    }
 
-    let _log_guard =
-        crate::logging::init_logging(Some(&logs_root)).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let _log_guard = crate::logging::init_logging(Some(&logs_root)).unwrap_or_else(|e| {
+        eprintln!("Warning: file logging unavailable: {e}");
+        None
+    });
 
     println!("🦀 Rusty v{VERSION} starting...");
     info!(workflow = %args.workflow_path.display(), port = ?args.port, "Rusty starting");

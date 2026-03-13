@@ -76,9 +76,9 @@ pub fn validate_dispatch_config(config: &RustyConfig) -> Result<(), ConfigError>
     let api_key = config.tracker.api_key.as_deref().unwrap_or("$GITHUB_TOKEN");
     resolve_env_value(api_key)?;
 
-    if config.tracker.repo.is_none() {
+    if config.tracker.full_repo().is_none() {
         return Err(ConfigError::ValidationError(
-            "tracker.repo is required (format: owner/repo)".to_string(),
+            "tracker.repo is required (format: owner/repo, or set tracker.owner + tracker.repo separately)".to_string(),
         ));
     }
 

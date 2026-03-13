@@ -31,7 +31,7 @@ impl GitHubClient {
     }
 
     fn issues_url(config: &TrackerConfig) -> Result<String, TrackerError> {
-        let repo = config.repo.as_ref().ok_or(TrackerError::MissingRepo)?;
+        let repo = config.full_repo().ok_or(TrackerError::MissingRepo)?;
         let endpoint = config
             .endpoint
             .as_deref()
@@ -42,7 +42,7 @@ impl GitHubClient {
 
     fn repo_name(config: &TrackerConfig) -> String {
         config
-            .repo
+            .full_repo()
             .as_deref()
             .and_then(|repo| repo.split('/').next_back())
             .unwrap_or("repo")
@@ -161,7 +161,7 @@ impl GitHubClient {
         numbers: &[u64],
     ) -> Result<Vec<Issue>, TrackerError> {
         let token = Self::resolve_token(config)?;
-        let repo = config.repo.as_ref().ok_or(TrackerError::MissingRepo)?;
+        let repo = config.full_repo().ok_or(TrackerError::MissingRepo)?;
         let endpoint = config
             .endpoint
             .as_deref()

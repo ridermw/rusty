@@ -132,8 +132,40 @@ fn validate_dispatch_config_rejects_missing_tracker_repo() {
     assert!(matches!(
         err,
         ConfigError::ValidationError(message)
-            if message == "tracker.repo is required (format: owner/repo)"
+            if message.contains("tracker.repo is required")
     ));
+}
+
+#[test]
+fn full_repo_combines_owner_and_repo() {
+    use rusty::config::schema::TrackerConfig;
+    let mut config = TrackerConfig::default();
+    config.owner = Some("ridermw".to_string());
+    config.repo = Some("rusty".to_string());
+    assert_eq!(config.full_repo(), Some("ridermw/rusty".to_string()));
+}
+
+#[test]
+fn full_repo_uses_combined_format_directly() {
+    use rusty::config::schema::TrackerConfig;
+    let mut config = TrackerConfig::default();
+    config.repo = Some("ridermw/rusty".to_string());
+    assert_eq!(config.full_repo(), Some("ridermw/rusty".to_string()));
+}
+
+#[test]
+fn full_repo_returns_none_when_missing() {
+    use rusty::config::schema::TrackerConfig;
+    let config = TrackerConfig::default();
+    assert_eq!(config.full_repo(), None);
+}
+
+#[test]
+fn validate_accepts_separate_owner_and_repo() {
+    let mut config = valid_config();
+    config.tracker.repo = Some("rusty".to_string());
+    config.tracker.owner = Some("ridermw".to_string());
+    assert!(validate_dispatch_config(&config).is_ok());
 }
 
 #[test]
