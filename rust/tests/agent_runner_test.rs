@@ -208,6 +208,48 @@ async fn after_run_hook_is_called_even_when_prompt_rendering_fails() {
 }
 
 #[tokio::test]
+async fn agent_runner_fails_on_before_run_hook_error() {
+    use rusty::agent::{run_agent_attempt, AgentUpdate, WorkerResult};
+    use rusty::config::schema::RustyConfig;
+    use rusty::tracker::memory::test_issue;
+    use rusty::workspace::hooks::default_shell_executor;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    let tmp = tempdir().unwrap();
+    let issue = test_issue("1", "repo-1", "Test", "open", Some(1));
+
+    let mut config = RustyConfig::default();
+    config.hooks.before_run = Some("exit 1".to_string());
+    config.hooks.timeout_ms = 5_000;
+    config.agent.command = "echo test".to_string();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel::<AgentUpdate>(16);
+    let shell = Arc::from(default_shell_executor());
+
+    let result = run_agent_attempt(
+        issue,
+        None,
+        config,
+        "prompt".to_string(),
+        tmp.path().to_path_buf(),
+        shell,
+        tx,
+    )
+    .await;
+
+    match result {
+        WorkerResult::Failed(msg) => {
+            assert!(
+                msg.contains("hook") || msg.contains("before_run"),
+                "expected hook error, got: {msg}"
+            );
+        }
+        WorkerResult::Completed => panic!("should have failed on before_run hook"),
+    }
+}
+
+#[tokio::test]
 async fn agent_runner_attempts_to_launch_agent_process() {
     use rusty::agent::{run_agent_attempt, AgentUpdate, WorkerResult};
     use rusty::config::schema::RustyConfig;

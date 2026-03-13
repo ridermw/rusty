@@ -2,6 +2,8 @@ use rusty::agent::dynamic_tool::{
     execute_github_graphql, github_graphql_spec, handle_tool_call, GraphqlToolInput, ToolResult,
 };
 use serde_json::json;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[test]
 fn github_graphql_spec_returns_expected_schema() {
@@ -135,6 +137,72 @@ fn tool_result_serializes_for_success_and_error_cases() {
             "error": "GraphQL errors in response"
         })
     );
+}
+
+#[tokio::test]
+async fn execute_github_graphql_success_with_mock_server() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {"viewer": {"login": "testuser"}}
+        })))
+        .mount(&server)
+        .await;
+
+    let result = execute_github_graphql(
+        json!({"query": "{ viewer { login } }"}),
+        "test-token",
+        &server.uri(),
+    )
+    .await;
+
+    assert!(result.success);
+    assert_eq!(
+        result.data,
+        Some(json!({
+            "data": {"viewer": {"login": "testuser"}}
+        }))
+    );
+    assert_eq!(result.error, None);
+}
+
+#[tokio::test]
+async fn execute_github_graphql_returns_failure_on_graphql_errors() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "errors": [{"message": "Field not found"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let result =
+        execute_github_graphql(json!({"query": "{ invalid }"}), "test-token", &server.uri()).await;
+
+    assert!(!result.success);
+    assert_eq!(
+        result.data,
+        Some(json!({
+            "errors": [{"message": "Field not found"}]
+        }))
+    );
+    assert_eq!(result.error.as_deref(), Some("GraphQL errors in response"));
+}
+
+#[tokio::test]
+async fn execute_github_graphql_handles_transport_error() {
+    let result = execute_github_graphql(
+        json!({"query": "{ viewer { login } }"}),
+        "test-token",
+        "http://127.0.0.1:1",
+    )
+    .await;
+
+    assert!(!result.success);
+    assert_eq!(result.data, None);
+    assert!(matches!(result.error.as_deref(), Some(error) if error.contains("transport")));
 }
 
 #[tokio::test]
