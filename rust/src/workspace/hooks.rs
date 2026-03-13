@@ -126,18 +126,35 @@ fn run_shell_command(
     let mut child = Command::new(shell)
         .args(args)
         .current_dir(cwd)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
-        .map_err(|_| WorkspaceError::HookFailed {
-            hook: hook_name.to_string(),
-            exit_code: -1,
+        .map_err(|e| {
+            tracing::error!(hook = hook_name, error = %e, "failed to spawn hook shell");
+            WorkspaceError::HookFailed {
+                hook: hook_name.to_string(),
+                exit_code: -1,
+            }
         })?;
 
     let start = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
+                // Capture and log output for debugging
+                if let Some(mut stderr) = child.stderr.take() {
+                    let mut err_output = String::new();
+                    let _ = std::io::Read::read_to_string(&mut stderr, &mut err_output);
+                    if !err_output.trim().is_empty() {
+                        let truncated = if err_output.len() > 500 {
+                            &err_output[..500]
+                        } else {
+                            &err_output
+                        };
+                        tracing::warn!(hook = hook_name, stderr = truncated, "hook stderr output");
+                    }
+                }
+
                 return if status.success() {
                     Ok(())
                 } else {

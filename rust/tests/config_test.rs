@@ -188,21 +188,23 @@ fn expand_home_leaves_absolute_path_unchanged() {
     assert_eq!(expand_home("/absolute/path"), "/absolute/path");
 }
 
-#[test]
-fn validate_dispatch_config_rejects_missing_tracker_kind() {
-    let err = validate_dispatch_config(&RustyConfig::default()).unwrap_err();
+#[tokio::test]
+async fn validate_dispatch_config_rejects_missing_tracker_kind() {
+    let err = validate_dispatch_config(&RustyConfig::default())
+        .await
+        .unwrap_err();
     assert!(matches!(
         err,
         ConfigError::ValidationError(message) if message == "tracker.kind is required"
     ));
 }
 
-#[test]
-fn validate_dispatch_config_rejects_unsupported_tracker_kind() {
+#[tokio::test]
+async fn validate_dispatch_config_rejects_unsupported_tracker_kind() {
     let mut config = RustyConfig::default();
     config.tracker.kind = Some("linear".to_string());
 
-    let err = validate_dispatch_config(&config).unwrap_err();
+    let err = validate_dispatch_config(&config).await.unwrap_err();
     assert!(matches!(
         err,
         ConfigError::ValidationError(message)
@@ -210,13 +212,13 @@ fn validate_dispatch_config_rejects_unsupported_tracker_kind() {
     ));
 }
 
-#[test]
-fn validate_dispatch_config_rejects_missing_tracker_repo() {
+#[tokio::test]
+async fn validate_dispatch_config_rejects_missing_tracker_repo() {
     let mut config = RustyConfig::default();
     config.tracker.kind = Some("github".to_string());
     config.tracker.api_key = Some("token".to_string());
 
-    let err = validate_dispatch_config(&config).unwrap_err();
+    let err = validate_dispatch_config(&config).await.unwrap_err();
     assert!(matches!(
         err,
         ConfigError::ValidationError(message)
@@ -248,17 +250,17 @@ fn full_repo_returns_none_when_missing() {
     assert_eq!(config.full_repo(), None);
 }
 
-#[test]
-fn validate_accepts_separate_owner_and_repo() {
+#[tokio::test]
+async fn validate_accepts_separate_owner_and_repo() {
     let mut config = valid_config();
     config.tracker.repo = Some("rusty".to_string());
     config.tracker.owner = Some("ridermw".to_string());
-    assert!(validate_dispatch_config(&config).is_ok());
+    assert!(validate_dispatch_config(&config).await.is_ok());
 }
 
-#[test]
-fn validate_dispatch_config_accepts_valid_config() {
-    validate_dispatch_config(&valid_config()).unwrap();
+#[tokio::test]
+async fn validate_dispatch_config_accepts_valid_config() {
+    validate_dispatch_config(&valid_config()).await.unwrap();
 }
 
 #[test]
