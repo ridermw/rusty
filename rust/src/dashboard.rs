@@ -8,7 +8,7 @@ use crate::orchestrator::{OrchestratorSnapshot, RetrySnapshot, RunningSnapshot};
 pub fn render_dashboard(snapshot: &OrchestratorSnapshot) -> String {
     let mut out = String::new();
 
-    out.push_str("═══ Symphony Status ═══\n\n");
+    out.push_str("═══ Rusty Status ═══\n\n");
     out.push_str(&format!(
         "Running: {}  |  Retrying: {}  |  Tokens: {} (in:{} out:{})\n",
         snapshot.running_count,

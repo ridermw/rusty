@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
+use rusty::config::schema::TrackerConfig;
+use rusty::tracker::github::client::normalize_github_issue;
 use serde_json::json;
-use symphony::config::schema::TrackerConfig;
-use symphony::tracker::github::client::normalize_github_issue;
 
 fn github_config(state_labels: &[(&str, &str)]) -> TrackerConfig {
     TrackerConfig {
@@ -213,7 +213,7 @@ fn fetch_by_states_must_filter_to_exact_requested_states() {
 /// This structural test verifies the fix is in place.
 #[test]
 fn github_client_must_cache_responses_for_304_handling() {
-    use symphony::tracker::github::client::GitHubClient;
+    use rusty::tracker::github::client::GitHubClient;
     // This test will fail to compile if response_cache is missing from GitHubClient.
     // The field must exist for 304 responses to return cached data.
     let _client = GitHubClient::new();

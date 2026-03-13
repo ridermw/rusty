@@ -31,7 +31,7 @@ impl GitHubClient {
     }
 
     fn issues_url(config: &TrackerConfig) -> Result<String, TrackerError> {
-        let repo = config.repo.as_ref().ok_or(TrackerError::MissingRepo)?;
+        let repo = config.full_repo().ok_or(TrackerError::MissingRepo)?;
         let endpoint = config
             .endpoint
             .as_deref()
@@ -42,7 +42,7 @@ impl GitHubClient {
 
     fn repo_name(config: &TrackerConfig) -> String {
         config
-            .repo
+            .full_repo()
             .as_deref()
             .and_then(|repo| repo.split('/').next_back())
             .unwrap_or("repo")
@@ -75,7 +75,7 @@ impl GitHubClient {
                 .get(&url)
                 .header("Authorization", format!("Bearer {token}"))
                 .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "symphony-rust/0.1");
+                .header("User-Agent", "rusty/0.1");
 
             if let Some(etag) = self.etag_cache.read().unwrap().get(&url).cloned() {
                 request = request.header("If-None-Match", etag);
@@ -161,7 +161,7 @@ impl GitHubClient {
         numbers: &[u64],
     ) -> Result<Vec<Issue>, TrackerError> {
         let token = Self::resolve_token(config)?;
-        let repo = config.repo.as_ref().ok_or(TrackerError::MissingRepo)?;
+        let repo = config.full_repo().ok_or(TrackerError::MissingRepo)?;
         let endpoint = config
             .endpoint
             .as_deref()
@@ -177,7 +177,7 @@ impl GitHubClient {
                 .get(&url)
                 .header("Authorization", format!("Bearer {token}"))
                 .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "symphony-rust/0.1")
+                .header("User-Agent", "rusty/0.1")
                 .send()
                 .await
                 .map_err(|err| TrackerError::ApiRequest(err.to_string()))?;

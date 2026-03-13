@@ -1,0 +1,22 @@
+# Rust build artifacts
+rust/target/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude / Copilot local settings
+.claude/settings.local.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Specify CLI temp artifacts
+.specify/scripts/bash/*.tmp
+
+# Logs (generated at runtime)
+*.log

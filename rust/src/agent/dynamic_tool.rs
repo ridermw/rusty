@@ -37,7 +37,7 @@ pub fn github_graphql_spec() -> ToolSpec {
     ToolSpec {
         name: "github_graphql".to_string(),
         description:
-            "Execute a GraphQL query against the GitHub API using Symphony's configured auth."
+            "Execute a GraphQL query against the GitHub API using Rusty's configured auth."
                 .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -122,7 +122,7 @@ pub async fn execute_github_graphql(input: Value, token: &str, endpoint: &str) -
         .post(&graphql_url)
         .header("Authorization", format!("Bearer {}", token))
         .header("Content-Type", "application/json")
-        .header("User-Agent", "symphony-rust/0.1")
+        .header("User-Agent", "rusty/0.1")
         .json(&body)
         .send()
         .await

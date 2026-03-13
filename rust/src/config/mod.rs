@@ -1,6 +1,6 @@
 pub mod schema;
 
-use self::schema::SymphonyConfig;
+use self::schema::RustyConfig;
 use std::{collections::HashMap, env, path::PathBuf};
 use thiserror::Error;
 
@@ -57,7 +57,7 @@ pub fn resolve_path(value: &str) -> Result<String, ConfigError> {
     }
 }
 
-pub fn validate_dispatch_config(config: &SymphonyConfig) -> Result<(), ConfigError> {
+pub fn validate_dispatch_config(config: &RustyConfig) -> Result<(), ConfigError> {
     match &config.tracker.kind {
         Some(kind) if kind == "github" => {}
         Some(kind) => {
@@ -76,9 +76,9 @@ pub fn validate_dispatch_config(config: &SymphonyConfig) -> Result<(), ConfigErr
     let api_key = config.tracker.api_key.as_deref().unwrap_or("$GITHUB_TOKEN");
     resolve_env_value(api_key)?;
 
-    if config.tracker.repo.is_none() {
+    if config.tracker.full_repo().is_none() {
         return Err(ConfigError::ValidationError(
-            "tracker.repo is required (format: owner/repo)".to_string(),
+            "tracker.repo is required (format: owner/repo, or set tracker.owner + tracker.repo separately)".to_string(),
         ));
     }
 

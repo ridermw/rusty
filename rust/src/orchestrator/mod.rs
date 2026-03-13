@@ -3,7 +3,7 @@ pub mod state;
 use chrono::Utc;
 
 use crate::config;
-use crate::config::schema::SymphonyConfig;
+use crate::config::schema::RustyConfig;
 use crate::tracker::Issue;
 use state::{OrchestratorState, TokenTotals};
 use tokio::sync::oneshot;
@@ -68,7 +68,7 @@ pub struct RetrySnapshot {
 }
 
 /// Check if an issue is eligible for dispatch.
-pub fn is_eligible(issue: &Issue, state: &OrchestratorState, config: &SymphonyConfig) -> bool {
+pub fn is_eligible(issue: &Issue, state: &OrchestratorState, config: &RustyConfig) -> bool {
     if issue.id.is_empty()
         || issue.identifier.is_empty()
         || issue.title.is_empty()

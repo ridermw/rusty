@@ -1,4 +1,4 @@
-use symphony::cli;
+use rusty::cli;
 
 #[tokio::main]
 async fn main() {

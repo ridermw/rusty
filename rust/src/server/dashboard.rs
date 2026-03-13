@@ -2,7 +2,7 @@
 pub fn render_html_dashboard() -> String {
     r#"<!DOCTYPE html>
 <html>
-<head><title>Symphony Dashboard</title>
+<head><title>Rusty Dashboard</title>
 <meta http-equiv="refresh" content="5">
 <style>
 body { font-family: monospace; background: #1a1a2e; color: #eee; padding: 20px; }
@@ -14,7 +14,7 @@ th { color: #0f3460; background: #16213e; }
 </style>
 </head>
 <body>
-<h1>Symphony Dashboard</h1>
+<h1>Rusty Dashboard</h1>
 <p>Auto-refreshes every 5 seconds. For JSON data, use <a href="/api/v1/state">/api/v1/state</a>.</p>
 <div id="state">Loading...</div>
 <script>

@@ -1,7 +1,16 @@
 [package]
-name = "symphony"
+name = "rusty"
 version = "0.1.0"
 edition = "2021"
+description = "Rusty — orchestration daemon that polls GitHub Issues and runs Copilot CLI agent sessions"
+
+[[bin]]
+name = "rusty"
+path = "src/main.rs"
+
+[lib]
+name = "rusty"
+path = "src/lib.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

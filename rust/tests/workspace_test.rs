@@ -2,8 +2,8 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use symphony::workspace::hooks::{default_shell_executor, run_hook, HookKind, ShellExecutor};
-use symphony::workspace::{
+use rusty::workspace::hooks::{default_shell_executor, run_hook, HookKind, ShellExecutor};
+use rusty::workspace::{
     create_for_issue, remove_workspace, sanitize_workspace_key, verify_containment, workspace_path,
     WorkspaceError,
 };
@@ -221,12 +221,12 @@ fn default_shell_executor_returns_platform_executor() {
     #[cfg(windows)]
     assert!(executor
         .as_any()
-        .is::<symphony::workspace::hooks::PowerShellExecutor>());
+        .is::<rusty::workspace::hooks::PowerShellExecutor>());
 
     #[cfg(not(windows))]
     assert!(executor
         .as_any()
-        .is::<symphony::workspace::hooks::PosixShellExecutor>());
+        .is::<rusty::workspace::hooks::PosixShellExecutor>());
 }
 
 #[test]

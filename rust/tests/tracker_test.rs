@@ -1,6 +1,6 @@
-use symphony::config::schema::TrackerConfig;
-use symphony::tracker::memory::{test_issue, MemoryTracker};
-use symphony::tracker::Tracker;
+use rusty::config::schema::TrackerConfig;
+use rusty::tracker::memory::{test_issue, MemoryTracker};
+use rusty::tracker::Tracker;
 
 fn tracker_config(active_states: &[&str]) -> TrackerConfig {
     TrackerConfig {

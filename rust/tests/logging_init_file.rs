@@ -1,4 +1,4 @@
-use symphony::logging::init_logging;
+use rusty::logging::init_logging;
 
 #[test]
 fn init_logging_with_log_dir_creates_directory_and_guard() {

@@ -1,7 +1,7 @@
-use serde_json::json;
-use symphony::agent::dynamic_tool::{
+use rusty::agent::dynamic_tool::{
     execute_github_graphql, github_graphql_spec, handle_tool_call, GraphqlToolInput, ToolResult,
 };
+use serde_json::json;
 
 #[test]
 fn github_graphql_spec_returns_expected_schema() {
@@ -10,7 +10,7 @@ fn github_graphql_spec_returns_expected_schema() {
     assert_eq!(spec.name, "github_graphql");
     assert_eq!(
         spec.description,
-        "Execute a GraphQL query against the GitHub API using Symphony's configured auth."
+        "Execute a GraphQL query against the GitHub API using Rusty's configured auth."
     );
     assert_eq!(spec.input_schema["type"], json!("object"));
     assert_eq!(spec.input_schema["required"], json!(["query"]));

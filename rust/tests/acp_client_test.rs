@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::time::Duration;
 
+use rusty::agent::acp_client::{AgentError, ChildGuard, JsonRpcMessage, JsonRpcRequest};
 use serde_json::json;
-use symphony::agent::acp_client::{AgentError, ChildGuard, JsonRpcMessage, JsonRpcRequest};
 use tokio::process::Command;
 use tokio::time::sleep;
 
@@ -110,7 +110,7 @@ fn json_rpc_request_serializes_without_optional_fields() {
 
 #[test]
 fn launch_returns_not_found_for_missing_binary() {
-    match symphony::agent::AcpClient::launch(
+    match rusty::agent::AcpClient::launch(
         "definitely-not-a-real-binary-for-acp-tests",
         &[],
         Path::new("."),

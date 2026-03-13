@@ -1,15 +1,15 @@
 use chrono::{TimeZone, Utc};
-use symphony::config::schema::{SymphonyConfig, TrackerConfig};
-use symphony::orchestrator::state::{OrchestratorState, RetryEntry, RunningEntry, TokenTotals};
-use symphony::orchestrator::{
+use rusty::config::schema::{RustyConfig, TrackerConfig};
+use rusty::orchestrator::state::{OrchestratorState, RetryEntry, RunningEntry, TokenTotals};
+use rusty::orchestrator::{
     add_runtime_seconds, apply_token_update, build_snapshot, calculate_backoff, compose_session_id,
     detect_stalled, is_eligible, next_attempt, reconcile_against_tracker, should_warn_retry,
     sort_for_dispatch, ReconcileAction,
 };
-use symphony::tracker::{BlockerRef, Issue};
+use rusty::tracker::{BlockerRef, Issue};
 
-fn test_config() -> SymphonyConfig {
-    SymphonyConfig {
+fn test_config() -> RustyConfig {
+    RustyConfig {
         tracker: TrackerConfig {
             active_states: vec!["open".into(), "todo".into(), "in progress".into()],
             terminal_states: vec!["closed".into(), "done".into()],

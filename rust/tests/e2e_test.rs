@@ -1,21 +1,21 @@
-//! End-to-end integration tests for Symphony.
+//! End-to-end integration tests for Rusty.
 //!
 //! Uses MemoryTracker and in-process logic to validate the complete
 //! orchestration lifecycle without external dependencies.
 
 use chrono::Utc;
-use symphony::config::schema::*;
-use symphony::dashboard;
-use symphony::orchestrator::state::{OrchestratorState, TokenTotals};
-use symphony::orchestrator::{self, OrchestratorSnapshot, RunningSnapshot};
-use symphony::prompt;
-use symphony::tracker::memory::MemoryTracker;
-use symphony::tracker::{Issue, Tracker};
-use symphony::workspace;
+use rusty::config::schema::*;
+use rusty::dashboard;
+use rusty::orchestrator::state::{OrchestratorState, TokenTotals};
+use rusty::orchestrator::{self, OrchestratorSnapshot, RunningSnapshot};
+use rusty::prompt;
+use rusty::tracker::memory::MemoryTracker;
+use rusty::tracker::{Issue, Tracker};
+use rusty::workspace;
 use tempfile::tempdir;
 
-fn test_config() -> SymphonyConfig {
-    SymphonyConfig {
+fn test_config() -> RustyConfig {
+    RustyConfig {
         tracker: TrackerConfig {
             kind: Some("github".to_string()),
             repo: Some("test/repo".to_string()),
@@ -104,7 +104,7 @@ async fn full_lifecycle_poll_dispatch_skip_terminal() {
 
 #[tokio::test]
 async fn dispatch_respects_concurrency_limit() {
-    let config = SymphonyConfig {
+    let config = RustyConfig {
         agent: AgentConfig {
             max_concurrent_agents: 1,
             ..test_config().agent
@@ -123,7 +123,7 @@ async fn dispatch_respects_concurrency_limit() {
     state.claimed.insert("1".into());
     state.running.insert(
         "1".into(),
-        symphony::orchestrator::state::RunningEntry {
+        rusty::orchestrator::state::RunningEntry {
             issue_id: "1".into(),
             identifier: "repo-1".into(),
             issue: issues[0].clone(),
@@ -150,17 +150,15 @@ async fn dispatch_respects_concurrency_limit() {
 
 #[test]
 fn config_reload_parses_new_workflow() {
-    let v1 =
-        symphony::workflow::parse_workflow("---\npolling:\n  interval_ms: 30000\n---\nPrompt v1")
-            .unwrap();
-    let v2 =
-        symphony::workflow::parse_workflow("---\npolling:\n  interval_ms: 5000\n---\nPrompt v2")
-            .unwrap();
+    let v1 = rusty::workflow::parse_workflow("---\npolling:\n  interval_ms: 30000\n---\nPrompt v1")
+        .unwrap();
+    let v2 = rusty::workflow::parse_workflow("---\npolling:\n  interval_ms: 5000\n---\nPrompt v2")
+        .unwrap();
 
     assert_ne!(v1.prompt_template, v2.prompt_template);
-    let c1: SymphonyConfig =
+    let c1: RustyConfig =
         serde_yaml::from_value(serde_yaml::to_value(&v1.config).unwrap()).unwrap();
-    let c2: SymphonyConfig =
+    let c2: RustyConfig =
         serde_yaml::from_value(serde_yaml::to_value(&v2.config).unwrap()).unwrap();
     assert_eq!(c1.polling.interval_ms, 30000);
     assert_eq!(c2.polling.interval_ms, 5000);

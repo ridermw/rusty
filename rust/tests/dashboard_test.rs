@@ -1,6 +1,6 @@
-use symphony::dashboard::{humanize_event, render_dashboard};
-use symphony::orchestrator::state::TokenTotals;
-use symphony::orchestrator::{OrchestratorSnapshot, RetrySnapshot, RunningSnapshot};
+use rusty::dashboard::{humanize_event, render_dashboard};
+use rusty::orchestrator::state::TokenTotals;
+use rusty::orchestrator::{OrchestratorSnapshot, RetrySnapshot, RunningSnapshot};
 
 fn empty_snapshot() -> OrchestratorSnapshot {
     OrchestratorSnapshot {
