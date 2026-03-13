@@ -183,7 +183,7 @@ fn classify_event_turn_failed_returns_reason() {
 
 #[test]
 fn classify_event_session_message_completed_returns_completed() {
-    let event = classify_event(&notification("session/message/completed", json!({})));
+    let event = classify_event(&notification("session.message.completed", json!({})));
     assert!(matches!(event, AgentEvent::TurnCompleted));
 }
 
@@ -203,7 +203,7 @@ fn classify_event_unknown_method_returns_notification() {
 #[test]
 fn classify_event_approval_required_returns_payload() {
     let payload = json!({ "id": "approval-123", "kind": "tool" });
-    let event = classify_event(&notification("session/approvalRequired", payload.clone()));
+    let event = classify_event(&notification("session.approvalRequired", payload.clone()));
 
     match event {
         AgentEvent::ApprovalRequired(value) => assert_eq!(value, payload),
@@ -214,7 +214,7 @@ fn classify_event_approval_required_returns_payload() {
 #[test]
 fn classify_event_token_usage_returns_counts() {
     let event = classify_event(&notification(
-        "session/tokenUsage",
+        "session.tokenUsage",
         json!({
             "input_tokens": 11,
             "output_tokens": 7,
@@ -255,7 +255,7 @@ fn extract_token_usage_reads_nested_usage_object() {
 #[test]
 fn extract_token_usage_reads_camel_case_top_level() {
     let msg = notification(
-        "session/tokenUsage",
+        "session.tokenUsage",
         json!({
             "inputTokens": 100,
             "outputTokens": 50,

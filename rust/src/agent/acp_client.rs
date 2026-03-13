@@ -290,23 +290,43 @@ impl AcpClient {
             params["sandbox"] = serde_json::json!(sb);
         }
 
-        let id = self.send_request("session/create", Some(params)).await?;
+        let id = self.send_request("session.create", Some(params)).await?;
         let response = self.read_response(id, read_timeout_ms).await?;
 
         if let Some(err) = &response.error {
             return Err(AgentError::TurnFailed(format!(
-                "session/create failed: {err}"
+                "session.create failed: {err}"
             )));
         }
 
+        // Extract session ID — check multiple response shapes
         let session_id = response
             .result
             .as_ref()
-            .and_then(|r| r.get("session").or_else(|| r.get("thread")))
-            .and_then(|s| s.get("id"))
-            .and_then(Value::as_str)
+            .and_then(|r| {
+                // Try: result.sessionId (string)
+                r.get("sessionId")
+                    .and_then(Value::as_str)
+                    // Try: result.session.id
+                    .or_else(|| {
+                        r.get("session")
+                            .and_then(|s| s.get("id"))
+                            .and_then(Value::as_str)
+                    })
+                    // Try: result.id
+                    .or_else(|| r.get("id").and_then(Value::as_str))
+            })
             .map(ToOwned::to_owned)
-            .ok_or_else(|| AgentError::TurnFailed("no session ID in response".to_string()))?;
+            .ok_or_else(|| {
+                let result_str = response
+                    .result
+                    .as_ref()
+                    .map(|r| r.to_string())
+                    .unwrap_or_default();
+                AgentError::TurnFailed(format!(
+                    "no session ID in session.create response: {result_str}"
+                ))
+            })?;
 
         tracing::info!(%session_id, "ACP session created");
         Ok(session_id)
@@ -339,7 +359,7 @@ impl AcpClient {
         }
 
         let id = self
-            .send_request("session/message/send", Some(params))
+            .send_request("session.message.send", Some(params))
             .await?;
 
         let ack = self.read_response(id, 10_000).await?;
@@ -394,7 +414,7 @@ impl AcpClient {
                                 if let Some(id) = payload.get("id").and_then(Value::as_str) {
                                     let _ = self
                                         .send_request(
-                                            "approval/respond",
+                                            "approval.respond",
                                             Some(serde_json::json!({"id": id, "approved": true})),
                                         )
                                         .await;
@@ -439,8 +459,8 @@ pub fn classify_event(msg: &JsonRpcMessage) -> AgentEvent {
     let method = msg.method.as_deref().unwrap_or("");
 
     match method {
-        "turn/completed" | "session/message/completed" => AgentEvent::TurnCompleted,
-        "turn/failed" | "session/message/failed" => {
+        "turn/completed" | "session.message.completed" => AgentEvent::TurnCompleted,
+        "turn/failed" | "session.message.failed" => {
             let reason = msg
                 .params
                 .as_ref()
@@ -454,12 +474,12 @@ pub fn classify_event(msg: &JsonRpcMessage) -> AgentEvent {
                 .unwrap_or_else(|| "unknown".to_string());
             AgentEvent::TurnFailed(reason)
         }
-        "turn/cancelled" | "session/message/cancelled" => AgentEvent::TurnCancelled,
-        "item/tool/requestUserInput" | "session/userInputRequired" => AgentEvent::UserInputRequired,
-        "item/tool/approvalRequired" | "session/approvalRequired" => {
+        "turn/cancelled" | "session.message.cancelled" => AgentEvent::TurnCancelled,
+        "item/tool/requestUserInput" | "session.userInputRequired" => AgentEvent::UserInputRequired,
+        "item/tool/approvalRequired" | "session.approvalRequired" => {
             AgentEvent::ApprovalRequired(msg.params.clone().unwrap_or_default())
         }
-        "thread/tokenUsage/updated" | "session/tokenUsage" => {
+        "thread/tokenUsage/updated" | "session.tokenUsage" => {
             let (input, output, total) = extract_token_usage(msg);
             AgentEvent::TokenUsage {
                 input,
