@@ -24,15 +24,33 @@ impl Tracker for GitHubAdapter {
         &self,
         config: &TrackerConfig,
     ) -> Result<Vec<Issue>, TrackerError> {
-        let labels = if !config.active_issue_labels.is_empty() {
-            Some(config.active_issue_labels.as_slice())
-        } else if !config.labels.is_empty() {
-            Some(config.labels.as_slice())
+        // GitHub's labels query param uses AND semantics (issue must have ALL labels).
+        // For active_issue_labels we need OR semantics (issue has ANY of the labels).
+        // So fetch all open issues and post-filter for OR matching.
+        if !config.active_issue_labels.is_empty() {
+            let all = self.client.fetch_issues(config, "open", None).await?;
+            let required: Vec<String> = config
+                .active_issue_labels
+                .iter()
+                .map(|l| l.to_lowercase())
+                .collect();
+            Ok(all
+                .into_iter()
+                .filter(|issue| {
+                    issue
+                        .labels
+                        .iter()
+                        .any(|l| required.contains(&l.to_lowercase()))
+                })
+                .collect())
         } else {
-            None
-        };
-
-        self.client.fetch_issues(config, "open", labels).await
+            let labels = if config.labels.is_empty() {
+                None
+            } else {
+                Some(config.labels.as_slice())
+            };
+            self.client.fetch_issues(config, "open", labels).await
+        }
     }
 
     async fn fetch_issue_states_by_ids(&self, ids: &[String]) -> Result<Vec<Issue>, TrackerError> {

@@ -59,6 +59,90 @@ pub struct RunArgs {
     pub yolo: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitHubAuthStatus {
+    Environment { length: usize },
+    GhCli { length: usize },
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkflowFileStatus {
+    CurrentDir,
+    RustDir,
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrerequisiteReport {
+    pub github_auth: GitHubAuthStatus,
+    pub workflow_file: WorkflowFileStatus,
+    pub copilot_cli_version: Option<String>,
+    pub github_cli_version: Option<String>,
+}
+
+pub fn resolve_workspace_root(config: &crate::config::schema::RustyConfig) -> PathBuf {
+    config
+        .workspace
+        .root
+        .as_deref()
+        .map(crate::config::expand_home)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("rusty_workspaces"))
+}
+
+pub fn check_prerequisites() -> PrerequisiteReport {
+    let env_token = std::env::var("GITHUB_TOKEN")
+        .or_else(|_| std::env::var("GH_TOKEN"))
+        .ok()
+        .filter(|token| !token.is_empty());
+
+    let github_auth = if let Some(token) = env_token {
+        GitHubAuthStatus::Environment {
+            length: token.len(),
+        }
+    } else if let Some(token) = command_stdout("gh", &["auth", "token"]) {
+        GitHubAuthStatus::GhCli {
+            length: token.len(),
+        }
+    } else {
+        GitHubAuthStatus::Missing
+    };
+
+    let workflow_file = if std::path::Path::new("WORKFLOW.md").exists() {
+        WorkflowFileStatus::CurrentDir
+    } else if std::path::Path::new("rust/WORKFLOW.md").exists() {
+        WorkflowFileStatus::RustDir
+    } else {
+        WorkflowFileStatus::Missing
+    };
+
+    PrerequisiteReport {
+        github_auth,
+        workflow_file,
+        copilot_cli_version: command_stdout("copilot", &["--version"]),
+        github_cli_version: command_stdout("gh", &["--version"])
+            .map(|version| version.lines().next().unwrap_or("unknown").to_string()),
+    }
+}
+
+fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        None
+    } else {
+        Some(stdout)
+    }
+}
+
 pub async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -73,78 +157,49 @@ async fn run_setup() -> anyhow::Result<()> {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
 
-    print!("1. Checking GitHub auth... ");
-    let env_token = std::env::var("GITHUB_TOKEN")
-        .or_else(|_| std::env::var("GH_TOKEN"))
-        .ok()
-        .filter(|t| !t.is_empty());
+    let report = check_prerequisites();
 
-    if let Some(t) = env_token {
-        println!("✅ set via env ({} chars)", t.len());
-    } else {
-        match tokio::process::Command::new("gh")
-            .args(["auth", "token"])
-            .output()
-            .await
-        {
-            Ok(output) if output.status.success() => {
-                let t = String::from_utf8_lossy(&output.stdout);
-                let trimmed = t.trim();
-                if !trimmed.is_empty() {
-                    println!("✅ set via gh auth ({} chars)", trimmed.len());
-                } else {
-                    print_token_missing();
-                }
-            }
-            _ => print_token_missing(),
+    print!("1. Checking GitHub auth... ");
+    match report.github_auth {
+        GitHubAuthStatus::Environment { length } => {
+            println!("✅ set via env ({} chars)", length);
         }
+        GitHubAuthStatus::GhCli { length } => {
+            println!("✅ set via gh auth ({} chars)", length);
+        }
+        GitHubAuthStatus::Missing => print_token_missing(),
     }
 
     // Check for WORKFLOW.md
     print!("2. Checking WORKFLOW.md... ");
-    if std::path::Path::new("WORKFLOW.md").exists() {
-        println!("✅ found in current directory");
-    } else if std::path::Path::new("rust/WORKFLOW.md").exists() {
-        println!("⚠️  found at rust/WORKFLOW.md but not in current directory");
-        println!("   Copy it: copy rust\\WORKFLOW.md .\\WORKFLOW.md");
-    } else {
-        println!("❌ not found");
-        println!("   Create one or copy the template from rust/WORKFLOW.md");
+    match report.workflow_file {
+        WorkflowFileStatus::CurrentDir => println!("✅ found in current directory"),
+        WorkflowFileStatus::RustDir => {
+            println!("⚠️  found at rust/WORKFLOW.md but not in current directory");
+            println!("   Copy it: copy rust\\WORKFLOW.md .\\WORKFLOW.md");
+        }
+        WorkflowFileStatus::Missing => {
+            println!("❌ not found");
+            println!("   Create one or copy the template from rust/WORKFLOW.md");
+        }
     }
 
     // Check for Copilot CLI
     print!("3. Checking Copilot CLI... ");
-    match tokio::process::Command::new("copilot")
-        .arg("--version")
-        .output()
-        .await
-    {
-        Ok(output) if output.status.success() => {
-            let ver = String::from_utf8_lossy(&output.stdout);
-            println!("✅ {}", ver.trim());
-        }
-        _ => {
-            println!("❌ not found");
-            println!("   Install: https://docs.github.com/en/copilot/github-copilot-in-the-cli");
-        }
+    if let Some(version) = report.copilot_cli_version {
+        println!("✅ {version}");
+    } else {
+        println!("❌ not found");
+        println!("   Install: https://docs.github.com/en/copilot/github-copilot-in-the-cli");
     }
 
     // Check for gh CLI
     print!("4. Checking GitHub CLI... ");
-    match tokio::process::Command::new("gh")
-        .arg("--version")
-        .output()
-        .await
-    {
-        Ok(output) if output.status.success() => {
-            let ver = String::from_utf8_lossy(&output.stdout);
-            let first_line = ver.lines().next().unwrap_or("unknown");
-            println!("✅ {first_line}");
-        }
-        _ => {
-            println!("❌ not found");
-            println!("   Install: https://cli.github.com/");
-        }
+    if let Some(version) = report.github_cli_version {
+        println!("✅ {version}");
+    } else {
+        println!("❌ not found");
+        println!("   Install: https://cli.github.com/");
     }
 
     // Check logs directory
@@ -218,10 +273,7 @@ async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
     crate::config::validate_dispatch_config(&config).await?;
     info!("Configuration validated");
 
-    let workspace_root = match config.workspace.root.as_deref() {
-        Some(raw) => std::path::PathBuf::from(crate::config::expand_home(raw)),
-        None => std::env::temp_dir().join("rusty_workspaces"),
-    };
+    let workspace_root = resolve_workspace_root(&config);
     std::fs::create_dir_all(&workspace_root)
         .map_err(|e| anyhow::anyhow!("failed to create workspace root: {e}"))?;
 
