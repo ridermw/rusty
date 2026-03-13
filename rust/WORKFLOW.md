@@ -37,13 +37,8 @@ workspace:
 hooks:
   after_create: |
     git clone --depth 1 https://github.com/ridermw/rusty .
-    if command -v mise >/dev/null 2>&1; then
-      mise trust || true
-    fi
   before_remove: |
-    if command -v mise >/dev/null 2>&1; then
-      mise run workspace.before_remove || true
-    fi
+    echo "workspace cleanup"
 agent:
   max_concurrent_agents: 10
   max_turns: 20

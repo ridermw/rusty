@@ -114,7 +114,7 @@ pub fn effective_agent_command(config: &RustyConfig) -> &str {
     }
 }
 
-pub fn validate_dispatch_config(config: &RustyConfig) -> Result<(), ConfigError> {
+pub async fn validate_dispatch_config(config: &RustyConfig) -> Result<(), ConfigError> {
     match &config.tracker.kind {
         Some(kind) if kind == "github" => {}
         Some(kind) => {
@@ -130,30 +130,20 @@ pub fn validate_dispatch_config(config: &RustyConfig) -> Result<(), ConfigError>
         }
     }
 
-    // Validate GitHub auth is available at startup.
-    // Try the full resolution chain: explicit key → GITHUB_TOKEN → GH_TOKEN → gh auth token.
-    // This is sync validation, so we check env vars only (gh auth token is async).
-    let api_key = config.tracker.api_key.as_deref().unwrap_or("$GITHUB_TOKEN");
-    if api_key.starts_with('$') {
-        let var_name = &api_key[1..];
-        let env_ok = std::env::var(var_name)
-            .ok()
-            .filter(|v| !v.is_empty())
-            .is_some();
-        let gh_token_ok = std::env::var("GH_TOKEN")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .is_some();
-        if !env_ok && !gh_token_ok {
-            return Err(ConfigError::ValidationError(format!(
-                "No GitHub token found. Set {var_name}, GH_TOKEN, or run 'gh auth login'.\n\
-                     Required scopes: repo, read:discussion, project"
-            )));
+    // Validate GitHub auth via the full resolution chain:
+    // explicit literal → GITHUB_TOKEN env → GH_TOKEN env → gh auth token
+    match resolve_github_token(config.tracker.api_key.as_deref()).await {
+        Ok(_) => {}
+        Err(_) => {
+            return Err(ConfigError::ValidationError(
+                "No GitHub token found.\n  \
+                 Option 1: $env:GITHUB_TOKEN = \"ghp_your_token\"\n  \
+                 Option 2: $env:GH_TOKEN = \"ghp_your_token\"\n  \
+                 Option 3: gh auth login\n  \
+                 Required scopes: repo, read:discussion, project"
+                    .to_string(),
+            ));
         }
-    } else if api_key.is_empty() {
-        return Err(ConfigError::ValidationError(
-            "tracker.api_key is empty".to_string(),
-        ));
     }
 
     if config.tracker.full_repo().is_none() {

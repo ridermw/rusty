@@ -215,7 +215,7 @@ async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
     let config: crate::config::schema::RustyConfig =
         serde_yaml::from_value(serde_yaml::to_value(&workflow.config)?)?;
 
-    crate::config::validate_dispatch_config(&config)?;
+    crate::config::validate_dispatch_config(&config).await?;
     info!("Configuration validated");
 
     let workspace_root = match config.workspace.root.as_deref() {
