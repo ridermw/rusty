@@ -11,7 +11,7 @@ pub struct RustyConfig {
     pub agent: AgentConfig,
     pub server: ServerConfig,
     pub copilot: CopilotConfig,
-    pub github: GitHubConfig,
+    pub github: GitHubCliConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -46,12 +46,28 @@ impl TrackerConfig {
         }
     }
 
+    /// Get effective active states: combines active_states with active_issue_labels.
     pub fn effective_active_states(&self) -> Vec<String> {
-        merge_unique_case_insensitive(&self.active_states, &self.active_issue_labels)
+        let mut states: Vec<String> = self.active_states.clone();
+        for label in &self.active_issue_labels {
+            let lower = label.to_lowercase();
+            if !states.iter().any(|s| s.to_lowercase() == lower) {
+                states.push(label.clone());
+            }
+        }
+        states
     }
 
+    /// Get effective terminal states: combines terminal_states with terminal_issue_labels.
     pub fn effective_terminal_states(&self) -> Vec<String> {
-        merge_unique_case_insensitive(&self.terminal_states, &self.terminal_issue_labels)
+        let mut states: Vec<String> = self.terminal_states.clone();
+        for label in &self.terminal_issue_labels {
+            let lower = label.to_lowercase();
+            if !states.iter().any(|s| s.to_lowercase() == lower) {
+                states.push(label.clone());
+            }
+        }
+        states
     }
 }
 
@@ -170,6 +186,7 @@ impl Default for ServerConfig {
     }
 }
 
+/// Copilot CLI configuration (maps to copilot.* in WORKFLOW.md)
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct CopilotConfig {
@@ -192,15 +209,16 @@ impl Default for CopilotConfig {
     }
 }
 
+/// GitHub CLI configuration (maps to github.* in WORKFLOW.md)
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct GitHubConfig {
+pub struct GitHubCliConfig {
     pub cli_command: String,
     pub default_branch: String,
     pub required_pr_label: Option<String>,
 }
 
-impl Default for GitHubConfig {
+impl Default for GitHubCliConfig {
     fn default() -> Self {
         Self {
             cli_command: "gh".to_string(),
@@ -215,20 +233,4 @@ fn default_workspace_root() -> String {
         .join("rusty_workspaces")
         .to_string_lossy()
         .into_owned()
-}
-
-fn merge_unique_case_insensitive(primary: &[String], secondary: &[String]) -> Vec<String> {
-    let mut merged = primary.to_vec();
-
-    for candidate in secondary {
-        if merged
-            .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(candidate))
-        {
-            continue;
-        }
-        merged.push(candidate.clone());
-    }
-
-    merged
 }
