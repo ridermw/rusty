@@ -19,8 +19,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
                     rusty run --yolo --port 4000  # Start with web dashboard\n\n\
                   Docs: https://github.com/ridermw/rusty/blob/main/rust/README.md",
     after_help = "Environment variables:\n  \
-                  GITHUB_TOKEN    GitHub API token (required, or set in WORKFLOW.md)\n  \
-                  RUST_LOG        Log level filter (default: info)\n\n\
+                  GITHUB_TOKEN/GH_TOKEN  GitHub API token (or use gh auth login)\n  \
+                  RUST_LOG               Log level filter (default: info)\n\n\
                   Examples:\n  \
                   rusty run --yolo\n  \
                   rusty run --yolo --port 4000 --logs-root ./logs\n  \
@@ -73,14 +73,30 @@ async fn run_setup() -> anyhow::Result<()> {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
 
-    // Check GITHUB_TOKEN
-    print!("1. Checking GITHUB_TOKEN... ");
-    match std::env::var("GITHUB_TOKEN") {
-        Ok(t) if !t.is_empty() => println!("✅ set ({} chars)", t.len()),
-        _ => {
-            println!("❌ not set");
-            println!("   Set it with: $env:GITHUB_TOKEN = \"ghp_your_token_here\"");
-            println!("   Required scopes: repo, read:discussion, project");
+    print!("1. Checking GitHub auth... ");
+    let env_token = std::env::var("GITHUB_TOKEN")
+        .or_else(|_| std::env::var("GH_TOKEN"))
+        .ok()
+        .filter(|t| !t.is_empty());
+
+    if let Some(t) = env_token {
+        println!("✅ set via env ({} chars)", t.len());
+    } else {
+        match tokio::process::Command::new("gh")
+            .args(["auth", "token"])
+            .output()
+            .await
+        {
+            Ok(output) if output.status.success() => {
+                let t = String::from_utf8_lossy(&output.stdout);
+                let trimmed = t.trim();
+                if !trimmed.is_empty() {
+                    println!("✅ set via gh auth ({} chars)", trimmed.len());
+                } else {
+                    print_token_missing();
+                }
+            }
+            _ => print_token_missing(),
         }
     }
 
@@ -149,6 +165,13 @@ async fn run_setup() -> anyhow::Result<()> {
     println!();
 
     Ok(())
+}
+
+fn print_token_missing() {
+    println!("❌ not found");
+    println!("   Option 1: gh auth login");
+    println!("   Option 2: $env:GITHUB_TOKEN = \"ghp_your_token_here\"");
+    println!("   Required scopes: repo, read:discussion, project");
 }
 
 async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {

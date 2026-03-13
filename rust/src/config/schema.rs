@@ -10,6 +10,8 @@ pub struct RustyConfig {
     pub hooks: HooksConfig,
     pub agent: AgentConfig,
     pub server: ServerConfig,
+    pub copilot: CopilotConfig,
+    pub github: GitHubConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -42,6 +44,14 @@ impl TrackerConfig {
             (_, Some(repo)) if repo.contains('/') => Some(repo.clone()),
             _ => None,
         }
+    }
+
+    pub fn effective_active_states(&self) -> Vec<String> {
+        merge_unique_case_insensitive(&self.active_states, &self.active_issue_labels)
+    }
+
+    pub fn effective_terminal_states(&self) -> Vec<String> {
+        merge_unique_case_insensitive(&self.terminal_states, &self.terminal_issue_labels)
     }
 }
 
@@ -160,9 +170,65 @@ impl Default for ServerConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CopilotConfig {
+    pub command: String,
+    pub chat_command: Option<String>,
+    pub approval_policy: String,
+    pub thread_sandbox: Option<String>,
+    pub turn_sandbox_policy: Option<serde_yaml::Value>,
+}
+
+impl Default for CopilotConfig {
+    fn default() -> Self {
+        Self {
+            command: "copilot".to_string(),
+            chat_command: None,
+            approval_policy: "never".to_string(),
+            thread_sandbox: None,
+            turn_sandbox_policy: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct GitHubConfig {
+    pub cli_command: String,
+    pub default_branch: String,
+    pub required_pr_label: Option<String>,
+}
+
+impl Default for GitHubConfig {
+    fn default() -> Self {
+        Self {
+            cli_command: "gh".to_string(),
+            default_branch: "main".to_string(),
+            required_pr_label: None,
+        }
+    }
+}
+
 fn default_workspace_root() -> String {
     std::env::temp_dir()
         .join("rusty_workspaces")
         .to_string_lossy()
         .into_owned()
+}
+
+fn merge_unique_case_insensitive(primary: &[String], secondary: &[String]) -> Vec<String> {
+    let mut merged = primary.to_vec();
+
+    for candidate in secondary {
+        if merged
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(candidate))
+        {
+            continue;
+        }
+        merged.push(candidate.clone());
+    }
+
+    merged
 }

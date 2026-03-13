@@ -36,6 +36,53 @@ pub fn resolve_env_value(value: &str) -> Result<String, ConfigError> {
     }
 }
 
+/// Resolve GitHub auth token from multiple sources (in priority order):
+/// 1. Explicit literal config value
+/// 2. GITHUB_TOKEN env var
+/// 3. GH_TOKEN env var (gh CLI convention)
+/// 4. `gh auth token` subprocess output
+///
+/// Returns the token string or an error if no source provides one.
+pub async fn resolve_github_token(config_value: Option<&str>) -> Result<String, ConfigError> {
+    match config_value {
+        Some(val) if !val.is_empty() && !val.starts_with('$') => return Ok(val.to_string()),
+        Some(val) if !val.is_empty() && val != "$GITHUB_TOKEN" && val != "$GH_TOKEN" => {
+            return resolve_env_value(val);
+        }
+        _ => {}
+    }
+
+    if let Ok(token) = env::var("GITHUB_TOKEN") {
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+
+    if let Ok(token) = env::var("GH_TOKEN") {
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+
+    match tokio::process::Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => {
+            let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !token.is_empty() {
+                return Ok(token);
+            }
+        }
+        _ => {}
+    }
+
+    Err(ConfigError::ValidationError(
+        "No GitHub token found. Set GITHUB_TOKEN, GH_TOKEN, or run 'gh auth login'.".to_string(),
+    ))
+}
+
 /// Expand `~` to home directory using dirs::home_dir().
 pub fn expand_home(path: &str) -> String {
     if path == "~" || path.starts_with("~/") || path.starts_with("~\\") {
@@ -57,6 +104,16 @@ pub fn resolve_path(value: &str) -> Result<String, ConfigError> {
     }
 }
 
+/// Get the effective agent launch command.
+/// Prefers agent.command if non-default, otherwise falls back to copilot.command.
+pub fn effective_agent_command(config: &RustyConfig) -> &str {
+    if config.agent.command != "copilot --acp --stdio" && !config.agent.command.is_empty() {
+        &config.agent.command
+    } else {
+        &config.copilot.command
+    }
+}
+
 pub fn validate_dispatch_config(config: &RustyConfig) -> Result<(), ConfigError> {
     match &config.tracker.kind {
         Some(kind) if kind == "github" => {}
@@ -73,8 +130,15 @@ pub fn validate_dispatch_config(config: &RustyConfig) -> Result<(), ConfigError>
         }
     }
 
-    let api_key = config.tracker.api_key.as_deref().unwrap_or("$GITHUB_TOKEN");
-    resolve_env_value(api_key)?;
+    if let Some(api_key) = config
+        .tracker
+        .api_key
+        .as_deref()
+        .filter(|api_key| !api_key.is_empty() && api_key.starts_with('$'))
+        .filter(|api_key| *api_key != "$GITHUB_TOKEN" && *api_key != "$GH_TOKEN")
+    {
+        resolve_env_value(api_key)?;
+    }
 
     if config.tracker.full_repo().is_none() {
         return Err(ConfigError::ValidationError(
@@ -82,9 +146,9 @@ pub fn validate_dispatch_config(config: &RustyConfig) -> Result<(), ConfigError>
         ));
     }
 
-    if config.agent.command.is_empty() {
+    if effective_agent_command(config).is_empty() {
         return Err(ConfigError::ValidationError(
-            "agent.command must not be empty".to_string(),
+            "agent.command or copilot.command must not be empty".to_string(),
         ));
     }
 

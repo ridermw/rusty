@@ -1,10 +1,50 @@
-use std::{collections::HashMap, env, path::PathBuf};
+use std::{collections::HashMap, env, path::PathBuf, sync::Mutex};
 
 use rusty::config::schema::RustyConfig;
 use rusty::config::{
-    expand_home, normalize_state_concurrency, resolve_env_value, validate_dispatch_config,
-    ConfigError,
+    effective_agent_command, expand_home, normalize_state_concurrency, resolve_env_value,
+    resolve_github_token, validate_dispatch_config, ConfigError,
 };
+
+static GITHUB_AUTH_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct GitHubAuthEnvGuard {
+    github_token: Option<String>,
+    gh_token: Option<String>,
+    path: Option<String>,
+}
+
+impl GitHubAuthEnvGuard {
+    fn capture() -> Self {
+        Self {
+            github_token: env::var("GITHUB_TOKEN").ok(),
+            gh_token: env::var("GH_TOKEN").ok(),
+            path: env::var("PATH").ok(),
+        }
+    }
+
+    fn clear_tokens(&self) {
+        env::remove_var("GITHUB_TOKEN");
+        env::remove_var("GH_TOKEN");
+    }
+}
+
+impl Drop for GitHubAuthEnvGuard {
+    fn drop(&mut self) {
+        match &self.github_token {
+            Some(value) => env::set_var("GITHUB_TOKEN", value),
+            None => env::remove_var("GITHUB_TOKEN"),
+        }
+        match &self.gh_token {
+            Some(value) => env::set_var("GH_TOKEN", value),
+            None => env::remove_var("GH_TOKEN"),
+        }
+        match &self.path {
+            Some(value) => env::set_var("PATH", value),
+            None => env::remove_var("PATH"),
+        }
+    }
+}
 
 fn valid_config() -> RustyConfig {
     let mut config = RustyConfig::default();
@@ -29,6 +69,8 @@ fn config_defaults_are_correct() {
     assert_eq!(config.tracker.active_states, vec!["open".to_string()]);
     assert_eq!(config.tracker.terminal_states, vec!["closed".to_string()]);
     assert!(config.tracker.labels.is_empty());
+    assert!(config.tracker.active_issue_labels.is_empty());
+    assert!(config.tracker.terminal_issue_labels.is_empty());
     assert!(config.tracker.state_labels.is_empty());
     assert_eq!(config.tracker.assignee, None);
 
@@ -56,6 +98,16 @@ fn config_defaults_are_correct() {
 
     assert_eq!(config.server.port, None);
     assert_eq!(config.server.host.as_deref(), Some("127.0.0.1"));
+
+    assert_eq!(config.copilot.command, "copilot");
+    assert_eq!(config.copilot.chat_command, None);
+    assert_eq!(config.copilot.approval_policy, "never");
+    assert_eq!(config.copilot.thread_sandbox, None);
+    assert_eq!(config.copilot.turn_sandbox_policy, None);
+
+    assert_eq!(config.github.cli_command, "gh");
+    assert_eq!(config.github.default_branch, "main");
+    assert_eq!(config.github.required_pr_label, None);
 }
 
 #[test]
@@ -85,6 +137,42 @@ fn resolve_env_value_returns_error_for_missing_var() {
 #[test]
 fn resolve_env_value_returns_literal_when_not_prefixed() {
     assert_eq!(resolve_env_value("literal").unwrap(), "literal");
+}
+
+#[tokio::test]
+async fn resolve_github_token_returns_explicit_value_directly() {
+    let _lock = GITHUB_AUTH_ENV_LOCK.lock().unwrap();
+    let env_guard = GitHubAuthEnvGuard::capture();
+    env_guard.clear_tokens();
+
+    let resolved = resolve_github_token(Some("literal-token")).await.unwrap();
+    assert_eq!(resolved, "literal-token");
+}
+
+#[tokio::test]
+async fn resolve_github_token_returns_github_token_env_value() {
+    let _lock = GITHUB_AUTH_ENV_LOCK.lock().unwrap();
+    let env_guard = GitHubAuthEnvGuard::capture();
+    env_guard.clear_tokens();
+    env::set_var("GITHUB_TOKEN", "env-token");
+
+    let resolved = resolve_github_token(None).await.unwrap();
+    assert_eq!(resolved, "env-token");
+}
+
+#[tokio::test]
+async fn resolve_github_token_returns_error_when_no_source_is_available() {
+    let _lock = GITHUB_AUTH_ENV_LOCK.lock().unwrap();
+    let env_guard = GitHubAuthEnvGuard::capture();
+    env_guard.clear_tokens();
+    env::set_var("PATH", "");
+
+    let err = resolve_github_token(None).await.unwrap_err();
+    assert!(matches!(
+        err,
+        ConfigError::ValidationError(message)
+            if message == "No GitHub token found. Set GITHUB_TOKEN, GH_TOKEN, or run 'gh auth login'."
+    ));
 }
 
 #[test]
@@ -207,4 +295,102 @@ tracker:
     assert_eq!(config.agent.max_turns, 20);
     assert_eq!(config.agent.command, "copilot --acp --stdio");
     assert_eq!(config.server.host.as_deref(), Some("127.0.0.1"));
+    assert_eq!(config.copilot.command, "copilot");
+    assert_eq!(config.github.cli_command, "gh");
+}
+
+#[test]
+fn rusty_config_deserializes_with_copilot_and_github_sections() {
+    let yaml = r#"
+tracker:
+  kind: github
+  repo: owner/repo
+copilot:
+  command: copilot-cli
+  chat_command: copilot chat
+  approval_policy: on-request
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    mode: strict
+github:
+  cli_command: ghx
+  default_branch: trunk
+  required_pr_label: ready
+"#;
+
+    let config: RustyConfig = serde_yaml::from_str(yaml).unwrap();
+
+    assert_eq!(config.copilot.command, "copilot-cli");
+    assert_eq!(config.copilot.chat_command.as_deref(), Some("copilot chat"));
+    assert_eq!(config.copilot.approval_policy, "on-request");
+    assert_eq!(
+        config.copilot.thread_sandbox.as_deref(),
+        Some("workspace-write")
+    );
+    assert_eq!(
+        config.copilot.turn_sandbox_policy,
+        Some(serde_yaml::from_str("mode: strict").unwrap())
+    );
+    assert_eq!(config.github.cli_command, "ghx");
+    assert_eq!(config.github.default_branch, "trunk");
+    assert_eq!(config.github.required_pr_label.as_deref(), Some("ready"));
+}
+
+#[test]
+fn effective_active_states_merge_labels_without_duplicates() {
+    let mut config = rusty::config::schema::TrackerConfig {
+        active_states: vec!["Open".to_string(), "Todo".to_string()],
+        active_issue_labels: vec!["todo".to_string(), "In Progress".to_string()],
+        ..Default::default()
+    };
+
+    assert_eq!(
+        config.effective_active_states(),
+        vec![
+            "Open".to_string(),
+            "Todo".to_string(),
+            "In Progress".to_string()
+        ]
+    );
+
+    config.active_issue_labels.push("open".to_string());
+    assert_eq!(
+        config.effective_active_states(),
+        vec![
+            "Open".to_string(),
+            "Todo".to_string(),
+            "In Progress".to_string()
+        ]
+    );
+}
+
+#[test]
+fn effective_terminal_states_merge_labels_without_duplicates() {
+    let mut config = rusty::config::schema::TrackerConfig {
+        terminal_states: vec!["Closed".to_string()],
+        terminal_issue_labels: vec!["done".to_string(), "CLOSED".to_string()],
+        ..Default::default()
+    };
+
+    assert_eq!(
+        config.effective_terminal_states(),
+        vec!["Closed".to_string(), "done".to_string()]
+    );
+
+    config.terminal_issue_labels.push("Done".to_string());
+    assert_eq!(
+        config.effective_terminal_states(),
+        vec!["Closed".to_string(), "done".to_string()]
+    );
+}
+
+#[test]
+fn effective_agent_command_prefers_agent_command_and_falls_back_to_copilot_command() {
+    let mut config = RustyConfig::default();
+    config.copilot.command = "copilot-cli".to_string();
+
+    assert_eq!(effective_agent_command(&config), "copilot-cli");
+
+    config.agent.command = "custom-agent --stdio".to_string();
+    assert_eq!(effective_agent_command(&config), "custom-agent --stdio");
 }

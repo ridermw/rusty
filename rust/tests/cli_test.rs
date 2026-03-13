@@ -1,5 +1,5 @@
 use clap::Parser;
-use rusty::cli::{Cli, Commands, RunArgs};
+use rusty::cli::{Cli, Commands};
 
 #[test]
 fn cli_run_default_workflow_path() {
