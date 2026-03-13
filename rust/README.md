@@ -1,5 +1,7 @@
 # Rusty — Symphony for GitHub
 
+[![Build Status](https://github.com/ridermw/rusty/actions/workflows/make-all.yml/badge.svg)](https://github.com/ridermw/rusty/actions/workflows/make-all.yml)
+
 A Rust implementation of [Symphony](../SPEC.md) that orchestrates coding agents against GitHub Issues using Copilot CLI.
 
 > [!WARNING]
