@@ -2,7 +2,7 @@ use std::{collections::HashMap, env, path::PathBuf, sync::Mutex};
 
 use rusty::config::schema::RustyConfig;
 use rusty::config::{
-    effective_agent_command, expand_home, normalize_state_concurrency, resolve_env_value,
+    agent_launch_command, expand_home, normalize_state_concurrency, resolve_env_value,
     resolve_github_token, validate_dispatch_config, ConfigError,
 };
 
@@ -90,7 +90,7 @@ fn config_defaults_are_correct() {
     assert_eq!(config.agent.max_turns, 20);
     assert_eq!(config.agent.max_retry_backoff_ms, 300_000);
     assert!(config.agent.max_concurrent_agents_by_state.is_empty());
-    assert_eq!(config.agent.command, "copilot --acp --stdio");
+    assert_eq!(config.agent.command, "copilot --acp --yolo --no-ask-user");
     assert_eq!(config.agent.turn_timeout_ms, 3_600_000);
     assert_eq!(config.agent.read_timeout_ms, 5_000);
     assert_eq!(config.agent.stall_timeout_ms, 300_000);
@@ -308,7 +308,7 @@ tracker:
     assert_eq!(config.tracker.terminal_states, vec!["closed".to_string()]);
     assert_eq!(config.polling.interval_ms, 30_000);
     assert_eq!(config.agent.max_turns, 20);
-    assert_eq!(config.agent.command, "copilot --acp --stdio");
+    assert_eq!(config.agent.command, "copilot --acp --yolo --no-ask-user");
     assert_eq!(config.server.host.as_deref(), Some("127.0.0.1"));
     assert_eq!(config.copilot.command, "copilot");
     assert_eq!(config.github.cli_command, "gh");
@@ -400,12 +400,14 @@ fn effective_terminal_states_merge_labels_without_duplicates() {
 }
 
 #[test]
-fn effective_agent_command_prefers_agent_command_and_falls_back_to_copilot_command() {
-    let mut config = RustyConfig::default();
-    config.copilot.command = "copilot-cli".to_string();
+fn agent_launch_command_returns_agent_command_directly() {
+    let config = RustyConfig::default();
+    assert_eq!(
+        agent_launch_command(&config),
+        "copilot --acp --yolo --no-ask-user"
+    );
 
-    assert_eq!(effective_agent_command(&config), "copilot-cli");
-
-    config.agent.command = "custom-agent --stdio".to_string();
-    assert_eq!(effective_agent_command(&config), "custom-agent --stdio");
+    let mut custom = RustyConfig::default();
+    custom.agent.command = "custom-agent --stdio".to_string();
+    assert_eq!(agent_launch_command(&custom), "custom-agent --stdio");
 }

@@ -116,14 +116,11 @@ pub fn resolve_path(value: &str) -> Result<String, ConfigError> {
     }
 }
 
-/// Get the effective agent launch command.
-/// Prefers agent.command if non-default, otherwise falls back to copilot.command.
-pub fn effective_agent_command(config: &RustyConfig) -> &str {
-    if config.agent.command != "copilot --acp --stdio" && !config.agent.command.is_empty() {
-        &config.agent.command
-    } else {
-        &config.copilot.command
-    }
+/// Get the agent launch command.
+/// Uses agent.command directly — it contains the full copilot invocation
+/// including ACP flags and permission settings.
+pub fn agent_launch_command(config: &RustyConfig) -> &str {
+    &config.agent.command
 }
 
 pub async fn validate_dispatch_config(config: &RustyConfig) -> Result<(), ConfigError> {
@@ -164,7 +161,7 @@ pub async fn validate_dispatch_config(config: &RustyConfig) -> Result<(), Config
         ));
     }
 
-    if effective_agent_command(config).is_empty() {
+    if agent_launch_command(config).is_empty() {
         return Err(ConfigError::ValidationError(
             "agent.command or copilot.command must not be empty".to_string(),
         ));
