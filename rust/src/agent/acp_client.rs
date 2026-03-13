@@ -485,18 +485,33 @@ pub fn classify_event(msg: &JsonRpcMessage) -> AgentEvent {
 
 pub fn extract_token_usage(msg: &JsonRpcMessage) -> (u64, u64, u64) {
     let params = msg.params.as_ref();
-    let get = |key: &str| -> u64 {
+
+    // Try multiple payload shapes:
+    // 1. Top-level snake_case: params.input_tokens
+    // 2. Nested snake_case: params.usage.input_tokens
+    // 3. Top-level camelCase: params.inputTokens
+    // 4. Nested camelCase: params.tokenUsage.total.inputTokens
+    let get = |snake: &str, camel: &str| -> u64 {
         params
             .and_then(|p| {
-                p.get(key)
-                    .or_else(|| p.get("usage").and_then(|u| u.get(key)))
+                p.get(snake)
+                    .or_else(|| p.get("usage").and_then(|u| u.get(snake)))
+                    .or_else(|| p.get(camel))
+                    .or_else(|| {
+                        p.get("tokenUsage")
+                            .and_then(|tu| tu.get("total").and_then(|t| t.get(camel)))
+                    })
+                    .or_else(|| {
+                        p.get("total_token_usage")
+                            .and_then(|tu| tu.get(snake).or_else(|| tu.get(camel)))
+                    })
             })
             .and_then(Value::as_u64)
             .unwrap_or(0)
     };
     (
-        get("input_tokens"),
-        get("output_tokens"),
-        get("total_tokens"),
+        get("input_tokens", "inputTokens"),
+        get("output_tokens", "outputTokens"),
+        get("total_tokens", "totalTokens"),
     )
 }

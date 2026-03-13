@@ -253,6 +253,38 @@ fn extract_token_usage_reads_nested_usage_object() {
 }
 
 #[test]
+fn extract_token_usage_reads_camel_case_top_level() {
+    let msg = notification(
+        "session/tokenUsage",
+        json!({
+            "inputTokens": 100,
+            "outputTokens": 50,
+            "totalTokens": 150
+        }),
+    );
+
+    assert_eq!(extract_token_usage(&msg), (100, 50, 150));
+}
+
+#[test]
+fn extract_token_usage_reads_camel_case_nested_token_usage() {
+    let msg = notification(
+        "thread/tokenUsage/updated",
+        json!({
+            "tokenUsage": {
+                "total": {
+                    "inputTokens": 200,
+                    "outputTokens": 80,
+                    "totalTokens": 280
+                }
+            }
+        }),
+    );
+
+    assert_eq!(extract_token_usage(&msg), (200, 80, 280));
+}
+
+#[test]
 fn turn_result_completed_pattern_matches() {
     let result = TurnResult::Completed {
         turn_id: "turn-42".to_string(),
