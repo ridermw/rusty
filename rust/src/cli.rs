@@ -218,24 +218,34 @@ async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
     crate::config::validate_dispatch_config(&config)?;
     info!("Configuration validated");
 
-    let (orch_tx, mut orch_rx) =
+    let workspace_root = match config.workspace.root.as_deref() {
+        Some(raw) => std::path::PathBuf::from(crate::config::expand_home(raw)),
+        None => std::env::temp_dir().join("rusty_workspaces"),
+    };
+    std::fs::create_dir_all(&workspace_root)
+        .map_err(|e| anyhow::anyhow!("failed to create workspace root: {e}"))?;
+
+    let shell_executor: std::sync::Arc<dyn crate::workspace::hooks::ShellExecutor> =
+        std::sync::Arc::from(crate::workspace::hooks::default_shell_executor());
+
+    let tracker: std::sync::Arc<dyn crate::tracker::Tracker> = std::sync::Arc::new(
+        crate::tracker::github::adapter::GitHubAdapter::new(config.tracker.clone()),
+    );
+
+    let orch_state = crate::orchestrator::state::OrchestratorState::new(
+        config.polling.interval_ms,
+        config.agent.max_concurrent_agents,
+    );
+
+    let (orch_tx, orch_rx) =
         tokio::sync::mpsc::channel::<crate::orchestrator::OrchestratorMsg>(256);
 
+    let shutdown_tx = orch_tx.clone();
     tokio::spawn(async move {
-        use crate::orchestrator::state::OrchestratorState;
-        use crate::orchestrator::{build_snapshot, OrchestratorMsg};
-
-        let state = OrchestratorState::new(30000, 10);
-        while let Some(msg) = orch_rx.recv().await {
-            match msg {
-                OrchestratorMsg::SnapshotRequest { reply } => {
-                    let _ = reply.send(build_snapshot(&state));
-                }
-                OrchestratorMsg::RefreshRequest { reply } => {
-                    let _ = reply.send(());
-                }
-                _ => {}
-            }
+        if tokio::signal::ctrl_c().await.is_ok() {
+            let _ = shutdown_tx
+                .send(crate::orchestrator::OrchestratorMsg::Shutdown)
+                .await;
         }
     });
 
@@ -270,9 +280,19 @@ async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
     }
 
     println!("✅ Rusty is running. Press Ctrl+C to stop.");
-    tokio::signal::ctrl_c().await?;
-    println!("\n🛑 Shutdown signal received");
-    info!("Shutdown signal received");
 
+    crate::orchestrator::run_orchestrator(
+        orch_state,
+        config,
+        tracker,
+        workflow.prompt_template,
+        workspace_root,
+        shell_executor,
+        orch_rx,
+        orch_tx,
+    )
+    .await;
+
+    println!("\n🛑 Shutdown complete");
     Ok(())
 }

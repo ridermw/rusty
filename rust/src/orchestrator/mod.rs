@@ -1,12 +1,18 @@
 pub mod state;
 
+use std::collections::HashSet;
+use std::path::Path;
+use std::sync::Arc;
+
 use chrono::Utc;
 
 use crate::config;
 use crate::config::schema::RustyConfig;
 use crate::tracker::Issue;
-use state::{OrchestratorState, TokenTotals};
-use tokio::sync::oneshot;
+use crate::workspace::hooks::{HookKind, ShellExecutor};
+use state::{OrchestratorState, RetryEntry, RunningEntry, TokenTotals};
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinSet;
 
 /// Messages the orchestrator receives.
 #[derive(Debug)]
@@ -31,6 +37,7 @@ pub enum OrchestratorMsg {
     RefreshRequest {
         reply: oneshot::Sender<()>,
     },
+    Shutdown,
 }
 
 /// Snapshot of orchestrator state for API/dashboard.
@@ -315,4 +322,353 @@ pub fn build_snapshot(state: &OrchestratorState) -> OrchestratorSnapshot {
         retrying,
         agent_totals: state.agent_totals.clone(),
     }
+}
+
+fn apply_agent_update_to_state(
+    state: &mut OrchestratorState,
+    issue_id: &str,
+    event: String,
+    message: Option<String>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+    session_id: Option<String>,
+) {
+    if let Some(entry) = state.running.get_mut(issue_id) {
+        entry.last_event = Some(event);
+        entry.last_event_at = Some(Utc::now());
+        entry.last_message = message;
+
+        if let Some(session_id) = session_id {
+            entry.session_id = Some(session_id);
+        }
+
+        if let (Some(input_tokens), Some(output_tokens), Some(total_tokens)) =
+            (input_tokens, output_tokens, total_tokens)
+        {
+            apply_token_update(
+                entry,
+                &mut state.agent_totals,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+            );
+        }
+    }
+}
+
+fn cleanup_workspace_for_issue(
+    config: &RustyConfig,
+    workspace_root: &Path,
+    shell_executor: &dyn ShellExecutor,
+    identifier: &str,
+) {
+    let ws_path = crate::workspace::workspace_path(workspace_root, identifier);
+    if !ws_path.exists() {
+        return;
+    }
+
+    let timeout = std::time::Duration::from_millis(config.hooks.timeout_ms);
+    if let Err(error) = crate::workspace::hooks::run_hook(
+        shell_executor,
+        HookKind::BeforeRemove,
+        config.hooks.before_remove.as_deref(),
+        &ws_path,
+        timeout,
+    ) {
+        tracing::warn!(%identifier, %error, "before_remove hook failed during cleanup");
+    }
+
+    if let Err(error) = crate::workspace::remove_workspace(workspace_root, identifier) {
+        tracing::warn!(%identifier, %error, "failed to remove workspace during cleanup");
+    }
+}
+
+fn schedule_retry(msg_tx: &mpsc::Sender<OrchestratorMsg>, issue_id: String, delay_ms: u64) {
+    let retry_tx = msg_tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+        let _ = retry_tx
+            .send(OrchestratorMsg::RetryFired { issue_id })
+            .await;
+    });
+}
+
+/// Run the orchestrator main loop. This is the heart of Rusty.
+pub async fn run_orchestrator(
+    mut state: OrchestratorState,
+    config: RustyConfig,
+    tracker: Arc<dyn crate::tracker::Tracker>,
+    workflow_prompt: String,
+    workspace_root: std::path::PathBuf,
+    shell_executor: Arc<dyn ShellExecutor>,
+    mut msg_rx: mpsc::Receiver<OrchestratorMsg>,
+    msg_tx: mpsc::Sender<OrchestratorMsg>,
+) {
+    let mut workers: JoinSet<(String, bool, Option<String>)> = JoinSet::new();
+    let (agent_update_tx, mut agent_update_rx) = mpsc::channel::<crate::agent::AgentUpdate>(256);
+    let mut tick_interval =
+        tokio::time::interval(tokio::time::Duration::from_millis(state.poll_interval_ms));
+    let active_states = config.tracker.effective_active_states();
+    let terminal_states = config.tracker.effective_terminal_states();
+
+    tracing::info!(
+        poll_ms = state.poll_interval_ms,
+        max_agents = state.max_concurrent_agents,
+        "orchestrator loop started"
+    );
+
+    loop {
+        tokio::select! {
+            _ = tick_interval.tick() => {
+                tracing::debug!("tick: starting poll cycle");
+
+                let stalled = detect_stalled(&state, config.agent.stall_timeout_ms);
+                for issue_id in stalled {
+                    tracing::warn!(%issue_id, "stalled session detected, aborting worker");
+                    if let Some(entry) = state.running.remove(&issue_id) {
+                        entry.worker_handle.abort();
+                        add_runtime_seconds(&mut state.agent_totals, &entry);
+                        state.claimed.remove(&issue_id);
+                    }
+                }
+
+                let running_ids: Vec<String> = state.running.keys().cloned().collect();
+                if !running_ids.is_empty() {
+                    match tracker.fetch_issue_states_by_ids(&running_ids).await {
+                        Ok(refreshed) => {
+                            for action in reconcile_against_tracker(
+                                &running_ids,
+                                &refreshed,
+                                &terminal_states,
+                                &active_states,
+                            ) {
+                                match action {
+                                    ReconcileAction::StopAndCleanup(issue_id) => {
+                                        tracing::info!(%issue_id, "tracker marked running issue terminal; stopping worker");
+                                        if let Some(entry) = state.running.remove(&issue_id) {
+                                            entry.worker_handle.abort();
+                                            add_runtime_seconds(&mut state.agent_totals, &entry);
+                                            cleanup_workspace_for_issue(
+                                                &config,
+                                                &workspace_root,
+                                                shell_executor.as_ref(),
+                                                &entry.identifier,
+                                            );
+                                            state.claimed.remove(&issue_id);
+                                            state.retry_attempts.remove(&issue_id);
+                                        }
+                                    }
+                                    ReconcileAction::StopNoCleanup(issue_id) => {
+                                        tracing::info!(%issue_id, "tracker marked running issue inactive; stopping worker");
+                                        if let Some(entry) = state.running.remove(&issue_id) {
+                                            entry.worker_handle.abort();
+                                            add_runtime_seconds(&mut state.agent_totals, &entry);
+                                            state.claimed.remove(&issue_id);
+                                            state.retry_attempts.remove(&issue_id);
+                                        }
+                                    }
+                                    ReconcileAction::UpdateState(issue_id, issue) => {
+                                        if let Some(entry) = state.running.get_mut(&issue_id) {
+                                            entry.issue = *issue;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            tracing::error!(error = %error, "failed to reconcile running issues");
+                        }
+                    }
+                }
+
+                match tracker.fetch_candidate_issues(&config.tracker).await {
+                    Ok(mut candidates) => {
+                        tracing::info!(count = candidates.len(), "fetched candidate issues");
+
+                        let candidate_ids: HashSet<String> = candidates.iter().map(|issue| issue.id.clone()).collect();
+                        state.retry_attempts.retain(|issue_id, _| {
+                            state.claimed.contains(issue_id) || candidate_ids.contains(issue_id)
+                        });
+
+                        sort_for_dispatch(&mut candidates);
+
+                        for issue in candidates {
+                            if state.available_global_slots() == 0 {
+                                break;
+                            }
+                            if !is_eligible(&issue, &state, &config) {
+                                continue;
+                            }
+
+                            let issue_id = issue.id.clone();
+                            let identifier = issue.identifier.clone();
+                            let retry_attempt = state.retry_attempts.remove(&issue_id).map(|entry| entry.attempt);
+                            state.claimed.insert(issue_id.clone());
+
+                            tracing::info!(%issue_id, %identifier, attempt = ?retry_attempt, "dispatching issue");
+
+                            let dispatch_config = config.clone();
+                            let dispatch_prompt = workflow_prompt.clone();
+                            let dispatch_root = workspace_root.clone();
+                            let dispatch_executor = shell_executor.clone();
+                            let dispatch_issue = issue.clone();
+                            let dispatch_updates = agent_update_tx.clone();
+
+                            let abort_handle = workers.spawn(async move {
+                                let result = crate::agent::run_agent_attempt(
+                                    dispatch_issue.clone(),
+                                    retry_attempt,
+                                    dispatch_config,
+                                    dispatch_prompt,
+                                    dispatch_root,
+                                    dispatch_executor,
+                                    dispatch_updates,
+                                )
+                                .await;
+
+                                let (success, error) = match result {
+                                    crate::agent::WorkerResult::Completed => (true, None),
+                                    crate::agent::WorkerResult::Failed(error) => (false, Some(error)),
+                                };
+
+                                (dispatch_issue.id, success, error)
+                            });
+
+                            state.running.insert(issue_id.clone(), RunningEntry {
+                                issue_id: issue_id.clone(),
+                                identifier: identifier.clone(),
+                                issue,
+                                session_id: None,
+                                last_event: None,
+                                last_event_at: None,
+                                last_message: None,
+                                input_tokens: 0,
+                                output_tokens: 0,
+                                total_tokens: 0,
+                                last_reported_input: 0,
+                                last_reported_output: 0,
+                                last_reported_total: 0,
+                                turn_count: 0,
+                                retry_attempt,
+                                started_at: chrono::Utc::now(),
+                                worker_handle: abort_handle,
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(error = %error, "failed to fetch candidates, skipping tick");
+                    }
+                }
+            }
+
+            Some(update) = agent_update_rx.recv() => {
+                apply_agent_update_to_state(
+                    &mut state,
+                    &update.issue_id,
+                    update.event,
+                    update.message,
+                    update.input_tokens,
+                    update.output_tokens,
+                    update.total_tokens,
+                    update.session_id,
+                );
+            }
+
+            Some(result) = workers.join_next() => {
+                match result {
+                    Ok((issue_id, success, error)) => {
+                        tracing::info!(%issue_id, %success, ?error, "worker exited");
+                        if let Some(entry) = state.running.remove(&issue_id) {
+                            let retry_attempt = next_attempt(entry.retry_attempt, success);
+                            let delay_ms = calculate_backoff(
+                                retry_attempt,
+                                config.agent.max_retry_backoff_ms,
+                                success,
+                            );
+
+                            add_runtime_seconds(&mut state.agent_totals, &entry);
+                            if success {
+                                state.completed.insert(issue_id.clone());
+                            }
+                            if !success && should_warn_retry(retry_attempt) {
+                                tracing::warn!(%issue_id, attempt = retry_attempt, ?error, "worker failed; scheduling retry");
+                            }
+
+                            state.retry_attempts.insert(
+                                issue_id.clone(),
+                                RetryEntry {
+                                    issue_id: issue_id.clone(),
+                                    identifier: entry.identifier.clone(),
+                                    attempt: retry_attempt,
+                                    due_at: chrono::Utc::now()
+                                        + chrono::Duration::milliseconds(delay_ms as i64),
+                                    error: error.clone(),
+                                },
+                            );
+                            schedule_retry(&msg_tx, issue_id.clone(), delay_ms);
+                        }
+                    }
+                    Err(error) if error.is_cancelled() => {
+                        tracing::debug!(error = %error, "worker task cancelled");
+                    }
+                    Err(error) => {
+                        tracing::error!(error = %error, "worker task panicked");
+                    }
+                }
+            }
+
+            msg = msg_rx.recv() => {
+                match msg {
+                    Some(OrchestratorMsg::SnapshotRequest { reply }) => {
+                        let _ = reply.send(build_snapshot(&state));
+                    }
+                    Some(OrchestratorMsg::RefreshRequest { reply }) => {
+                        let _ = reply.send(());
+                        tick_interval.reset_immediately();
+                    }
+                    Some(OrchestratorMsg::Tick) => {
+                        tick_interval.reset_immediately();
+                    }
+                    Some(OrchestratorMsg::RetryFired { issue_id }) => {
+                        state.claimed.remove(&issue_id);
+                        tick_interval.reset_immediately();
+                    }
+                    Some(OrchestratorMsg::AgentUpdate { issue_id, event, message }) => {
+                        apply_agent_update_to_state(
+                            &mut state,
+                            &issue_id,
+                            event,
+                            message,
+                            None,
+                            None,
+                            None,
+                            None,
+                        );
+                    }
+                    Some(OrchestratorMsg::WorkerExited { issue_id, success, error }) => {
+                        tracing::warn!(%issue_id, %success, ?error, "received external worker exit message; ignoring in favor of JoinSet tracking");
+                    }
+                    Some(OrchestratorMsg::Shutdown) => {
+                        tracing::info!("shutdown message received, stopping orchestrator");
+                        break;
+                    }
+                    None => {
+                        tracing::info!("orchestrator message channel closed, stopping orchestrator");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    workers.shutdown().await;
+
+    tracing::info!(
+        total_tokens = state.agent_totals.total_tokens,
+        runtime_secs = state.agent_totals.seconds_running,
+        completed = state.completed.len(),
+        retrying = state.retry_attempts.len(),
+        "orchestrator stopped"
+    );
 }

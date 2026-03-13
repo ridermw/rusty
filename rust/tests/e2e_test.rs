@@ -259,6 +259,49 @@ fn dashboard_renders_snapshot() {
 }
 
 #[tokio::test]
+async fn orchestrator_loop_runs_one_tick() {
+    use rusty::orchestrator::{run_orchestrator, OrchestratorMsg};
+    use rusty::workspace;
+    use rusty::workspace::hooks::default_shell_executor;
+    use std::sync::Arc;
+
+    let config = test_config();
+    let tracker = Arc::new(MemoryTracker::new(test_issues())) as Arc<dyn Tracker>;
+    let state = OrchestratorState::new(60_000, 2);
+    let shell: Arc<dyn rusty::workspace::hooks::ShellExecutor> =
+        Arc::from(default_shell_executor());
+    let tmp = tempdir().unwrap();
+
+    let (tx, rx) = tokio::sync::mpsc::channel(256);
+    let shutdown_tx = tx.clone();
+
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        let _ = shutdown_tx.send(OrchestratorMsg::Shutdown).await;
+    });
+
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        run_orchestrator(
+            state,
+            config,
+            tracker,
+            "Working on {{ issue.identifier }}".to_string(),
+            tmp.path().to_path_buf(),
+            shell,
+            rx,
+            tx,
+        ),
+    )
+    .await
+    .expect("orchestrator loop should exit");
+
+    let repo_one = workspace::workspace_path(tmp.path(), "repo-1");
+    let repo_two = workspace::workspace_path(tmp.path(), "repo-2");
+    assert!(repo_one.exists() || repo_two.exists());
+}
+
+#[tokio::test]
 #[ignore]
 async fn live_e2e_with_real_github_and_copilot() {
     if std::env::var("SYMPHONY_RUN_LIVE_E2E").as_deref() != Ok("1") {
