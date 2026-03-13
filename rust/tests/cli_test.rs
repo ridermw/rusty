@@ -55,6 +55,23 @@ fn cli_run_yolo_defaults_false() {
     }
 }
 
+/// Guardrails check: the daemon must not start without explicit acknowledgement.
+/// The --yolo flag defaults to false, meaning the run() function will bail
+/// before any autonomous agent execution begins.
+#[test]
+fn cli_guardrails_require_explicit_acknowledgement() {
+    let cli = Cli::parse_from(["rusty", "run"]);
+    match cli.command {
+        Commands::Run(args) => {
+            assert!(
+                !args.yolo,
+                "yolo flag must default to false — autonomous execution requires explicit opt-in"
+            );
+        }
+        _ => panic!("expected Run command"),
+    }
+}
+
 #[test]
 fn cli_setup_subcommand() {
     let cli = Cli::parse_from(["rusty", "setup"]);
