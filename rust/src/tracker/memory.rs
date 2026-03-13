@@ -65,11 +65,27 @@ impl Tracker for MemoryTracker {
             .map(|state| state.to_lowercase())
             .collect();
 
-        Ok(issues
+        let mut candidates: Vec<Issue> = issues
             .iter()
             .filter(|issue| active.contains(&issue.state.to_lowercase()))
             .cloned()
-            .collect())
+            .collect();
+
+        if !config.active_issue_labels.is_empty() {
+            let required: Vec<String> = config
+                .active_issue_labels
+                .iter()
+                .map(|label| label.to_lowercase())
+                .collect();
+            candidates.retain(|issue| {
+                issue
+                    .labels
+                    .iter()
+                    .any(|label| required.contains(&label.to_lowercase()))
+            });
+        }
+
+        Ok(candidates)
     }
 
     async fn fetch_issue_states_by_ids(&self, ids: &[String]) -> Result<Vec<Issue>, TrackerError> {

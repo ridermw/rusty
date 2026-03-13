@@ -24,10 +24,12 @@ impl Tracker for GitHubAdapter {
         &self,
         config: &TrackerConfig,
     ) -> Result<Vec<Issue>, TrackerError> {
-        let labels = if config.labels.is_empty() {
-            None
-        } else {
+        let labels = if !config.active_issue_labels.is_empty() {
+            Some(config.active_issue_labels.as_slice())
+        } else if !config.labels.is_empty() {
             Some(config.labels.as_slice())
+        } else {
+            None
         };
 
         self.client.fetch_issues(config, "open", labels).await

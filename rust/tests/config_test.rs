@@ -188,6 +188,19 @@ fn expand_home_leaves_absolute_path_unchanged() {
     assert_eq!(expand_home("/absolute/path"), "/absolute/path");
 }
 
+#[test]
+fn expand_home_normalizes_path_separators() {
+    let expanded = expand_home("~/foo/bar/baz");
+    // Should not contain mixed separators
+    let has_forward = expanded.contains('/');
+    let has_back = expanded.contains('\\');
+    // On any platform, separators should be consistent (not mixed)
+    assert!(
+        !(has_forward && has_back),
+        "path has mixed separators: {expanded}"
+    );
+}
+
 #[tokio::test]
 async fn validate_dispatch_config_rejects_missing_tracker_kind() {
     let err = validate_dispatch_config(&RustyConfig::default())

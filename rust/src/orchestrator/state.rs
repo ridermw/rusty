@@ -50,6 +50,8 @@ pub struct OrchestratorState {
     pub claimed: HashSet<String>,
     pub retry_attempts: HashMap<String, RetryEntry>,
     pub completed: HashSet<String>,
+    /// Track consecutive normal completions per issue (for throttling).
+    pub completed_counts: HashMap<String, u32>,
     pub agent_totals: TokenTotals,
     pub agent_rate_limits: Option<serde_json::Value>,
 }
@@ -63,6 +65,7 @@ impl OrchestratorState {
             claimed: HashSet::new(),
             retry_attempts: HashMap::new(),
             completed: HashSet::new(),
+            completed_counts: HashMap::new(),
             agent_totals: TokenTotals::default(),
             agent_rate_limits: None,
         }

@@ -87,11 +87,23 @@ pub async fn resolve_github_token(config_value: Option<&str>) -> Result<String, 
 pub fn expand_home(path: &str) -> String {
     if path == "~" || path.starts_with("~/") || path.starts_with("~\\") {
         if let Some(home) = dirs::home_dir() {
-            return path.replacen('~', &home.to_string_lossy(), 1);
+            let expanded = path.replacen('~', &home.to_string_lossy(), 1);
+            return normalize_path_separators(&expanded);
         }
     }
 
     path.to_string()
+}
+
+/// Normalize path separators to the platform default.
+/// On Windows: forward slashes → backslashes.
+/// On Unix: backslashes → forward slashes.
+pub fn normalize_path_separators(path: &str) -> String {
+    if cfg!(windows) {
+        path.replace('/', "\\")
+    } else {
+        path.replace('\\', "/")
+    }
 }
 
 /// Resolve a path value: expand ~ then resolve $VAR.

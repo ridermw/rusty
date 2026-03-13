@@ -138,11 +138,200 @@ pub async fn run_agent_attempt(
         )
         .await;
 
-        // ACP session integration will be wired in a follow-up change. For now, the
-        // runner exercises the workspace, hook, and prompt lifecycle in one attempt.
+        let command_parts: Vec<&str> = config.agent.command.split_whitespace().collect();
+        let (cmd, args): (&str, &[&str]) = match command_parts.split_first() {
+            Some((cmd, args)) => (*cmd, args),
+            None => {
+                warn!("agent.command is empty, falling back to copilot --acp --stdio");
+                ("copilot", &["--acp", "--stdio"])
+            }
+        };
+
+        let mut client = match AcpClient::launch(cmd, args, &ws_path) {
+            Ok(client) => client,
+            Err(e) => {
+                let error_message = format!("agent launch: {e}");
+                error!(error = %e, command = cmd, "failed to launch agent");
+                run_after_run_hook(&shell_executor, &config.hooks, &ws_path);
+                emit_update(
+                    &update_tx,
+                    AgentUpdate::new(&issue_id, "failed").with_message(error_message.clone()),
+                )
+                .await;
+                return WorkerResult::Failed(error_message);
+            }
+        };
+
+        if let Err(e) = client.handshake(config.agent.read_timeout_ms).await {
+            let error_message = format!("handshake: {e}");
+            error!(error = %e, "ACP handshake failed");
+            let _ = client.stop().await;
+            run_after_run_hook(&shell_executor, &config.hooks, &ws_path);
+            emit_update(
+                &update_tx,
+                AgentUpdate::new(&issue_id, "failed").with_message(error_message.clone()),
+            )
+            .await;
+            return WorkerResult::Failed(error_message);
+        }
+        info!("ACP handshake completed");
+
+        let session_id = match client
+            .create_session(
+                &ws_path,
+                &config.agent.approval_policy,
+                None,
+                config.agent.read_timeout_ms,
+            )
+            .await
+        {
+            Ok(session_id) => session_id,
+            Err(e) => {
+                let error_message = format!("session create: {e}");
+                error!(error = %e, "failed to create ACP session");
+                let _ = client.stop().await;
+                run_after_run_hook(&shell_executor, &config.hooks, &ws_path);
+                emit_update(
+                    &update_tx,
+                    AgentUpdate::new(&issue_id, "failed").with_message(error_message.clone()),
+                )
+                .await;
+                return WorkerResult::Failed(error_message);
+            }
+        };
+
+        emit_update(
+            &update_tx,
+            AgentUpdate {
+                issue_id: issue_id.clone(),
+                event: "session_started".to_string(),
+                message: Some(format!("session {session_id}")),
+                input_tokens: None,
+                output_tokens: None,
+                total_tokens: None,
+                session_id: Some(session_id.clone()),
+            },
+        )
+        .await;
+
+        let max_turns = config.agent.max_turns.max(1);
+        let mut turn_number = 1usize;
+        let title = format!("{}: {}", issue.identifier, issue.title);
+
+        loop {
+            let turn_prompt = if turn_number == 1 {
+                rendered_prompt.clone()
+            } else {
+                format!(
+                    "Continue working on {}. This is turn {}/{}. Resume from current workspace state.",
+                    issue.identifier, turn_number, max_turns
+                )
+            };
+
+            info!(turn = turn_number, max_turns, "starting turn");
+
+            let turn_result = client
+                .send_turn(
+                    &session_id,
+                    &turn_prompt,
+                    &title,
+                    &ws_path,
+                    &config.agent.approval_policy,
+                    None,
+                    config.agent.turn_timeout_ms,
+                    |event| {
+                        let update = match &event {
+                            crate::agent::AgentEvent::TokenUsage {
+                                input,
+                                output,
+                                total,
+                            } => AgentUpdate {
+                                issue_id: issue_id.clone(),
+                                event: "token_usage".to_string(),
+                                message: None,
+                                input_tokens: Some(*input),
+                                output_tokens: Some(*output),
+                                total_tokens: Some(*total),
+                                session_id: Some(session_id.clone()),
+                            },
+                            crate::agent::AgentEvent::Notification { message } => AgentUpdate {
+                                issue_id: issue_id.clone(),
+                                event: "notification".to_string(),
+                                message: Some(message.clone()),
+                                input_tokens: None,
+                                output_tokens: None,
+                                total_tokens: None,
+                                session_id: Some(session_id.clone()),
+                            },
+                            _ => AgentUpdate {
+                                issue_id: issue_id.clone(),
+                                event: format!("{event:?}"),
+                                message: None,
+                                input_tokens: None,
+                                output_tokens: None,
+                                total_tokens: None,
+                                session_id: Some(session_id.clone()),
+                            },
+                        };
+                        let _ = update_tx.try_send(update);
+                    },
+                )
+                .await;
+
+            match turn_result {
+                Ok(crate::agent::TurnResult::Completed { turn_id }) => {
+                    info!(%turn_id, turn = turn_number, "turn completed");
+                }
+                Ok(crate::agent::TurnResult::Failed { turn_id, reason }) => {
+                    let error_message = format!("turn failed: {reason}");
+                    error!(%turn_id, %reason, "turn failed");
+                    let _ = client.stop().await;
+                    run_after_run_hook(&shell_executor, &config.hooks, &ws_path);
+                    emit_update(
+                        &update_tx,
+                        AgentUpdate::new(&issue_id, "failed").with_message(error_message.clone()),
+                    )
+                    .await;
+                    return WorkerResult::Failed(error_message);
+                }
+                Ok(crate::agent::TurnResult::Cancelled { turn_id }) => {
+                    let error_message = "turn cancelled".to_string();
+                    warn!(%turn_id, "turn cancelled");
+                    let _ = client.stop().await;
+                    run_after_run_hook(&shell_executor, &config.hooks, &ws_path);
+                    emit_update(
+                        &update_tx,
+                        AgentUpdate::new(&issue_id, "failed").with_message(error_message.clone()),
+                    )
+                    .await;
+                    return WorkerResult::Failed(error_message);
+                }
+                Err(e) => {
+                    let error_message = format!("turn error: {e}");
+                    error!(error = %e, "turn error");
+                    let _ = client.stop().await;
+                    run_after_run_hook(&shell_executor, &config.hooks, &ws_path);
+                    emit_update(
+                        &update_tx,
+                        AgentUpdate::new(&issue_id, "failed").with_message(error_message.clone()),
+                    )
+                    .await;
+                    return WorkerResult::Failed(error_message);
+                }
+            }
+
+            if turn_number >= max_turns {
+                info!(turn = turn_number, "max turns reached");
+                break;
+            }
+
+            turn_number += 1;
+        }
+
+        let _ = client.stop().await;
         run_after_run_hook(&shell_executor, &config.hooks, &ws_path);
 
-        info!(turns_max = config.agent.max_turns, "agent run completed");
+        info!(turns_max = max_turns, "agent run completed");
         emit_update(&update_tx, AgentUpdate::new(&issue_id, "completed")).await;
         WorkerResult::Completed
     }

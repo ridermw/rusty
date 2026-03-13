@@ -43,6 +43,54 @@ async fn fetch_candidate_issues_with_empty_tracker_returns_empty() {
 }
 
 #[tokio::test]
+async fn memory_tracker_filters_by_active_issue_labels() {
+    use rusty::config::schema::TrackerConfig;
+    use rusty::tracker::memory::{test_issue, MemoryTracker};
+    use rusty::tracker::Tracker;
+
+    let mut issue_with_label = test_issue("1", "repo-1", "Has todo label", "open", Some(1));
+    issue_with_label.labels = vec!["todo".to_string()];
+
+    let issue_without_label = test_issue("2", "repo-2", "No workflow label", "open", Some(2));
+    // no labels — should be filtered out
+
+    let mut issue_enhancement = test_issue("3", "repo-3", "Enhancement", "open", Some(3));
+    issue_enhancement.labels = vec!["enhancement".to_string()];
+
+    let tracker = MemoryTracker::new(vec![
+        issue_with_label,
+        issue_without_label,
+        issue_enhancement,
+    ]);
+
+    let mut config = TrackerConfig::default();
+    config.active_issue_labels = vec!["todo".to_string(), "in_progress".to_string()];
+
+    let candidates = tracker.fetch_candidate_issues(&config).await.unwrap();
+
+    // Only the issue with "todo" label should be returned
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].identifier, "repo-1");
+}
+
+#[tokio::test]
+async fn memory_tracker_returns_all_when_no_label_filter() {
+    use rusty::config::schema::TrackerConfig;
+    use rusty::tracker::memory::{test_issue, MemoryTracker};
+    use rusty::tracker::Tracker;
+
+    let tracker = MemoryTracker::new(vec![
+        test_issue("1", "repo-1", "Issue 1", "open", Some(1)),
+        test_issue("2", "repo-2", "Issue 2", "open", Some(2)),
+    ]);
+
+    let config = TrackerConfig::default(); // no active_issue_labels
+
+    let candidates = tracker.fetch_candidate_issues(&config).await.unwrap();
+    assert_eq!(candidates.len(), 2); // All open issues returned when no label filter
+}
+
+#[tokio::test]
 async fn fetch_issue_states_by_ids_returns_correct_subset() {
     let tracker = MemoryTracker::new(vec![
         test_issue("1", "ISSUE-1", "First", "open", Some(1)),
