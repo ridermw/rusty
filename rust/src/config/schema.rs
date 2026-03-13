@@ -161,9 +161,9 @@ impl Default for AgentConfig {
             max_turns: 20,
             max_retry_backoff_ms: 300_000,
             max_concurrent_agents_by_state: HashMap::new(),
-            command: "copilot --acp --stdio".to_string(),
+            command: "copilot --acp --yolo --no-ask-user".to_string(),
             turn_timeout_ms: 3_600_000,
-            read_timeout_ms: 5_000,
+            read_timeout_ms: 30_000,
             stall_timeout_ms: 300_000,
             approval_policy: "auto-approve".to_string(),
         }

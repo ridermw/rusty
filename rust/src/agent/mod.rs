@@ -1,7 +1,9 @@
 pub mod acp_client;
 pub mod dynamic_tool;
 
-pub use acp_client::{AcpClient, AgentError, AgentEvent, ChildGuard, JsonRpcMessage, TurnResult};
+pub use acp_client::{
+    AcpClient, AgentError, AgentEvent, ChildGuard, JsonRpcMessage, JsonRpcResponse, TurnResult,
+};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -138,13 +140,13 @@ pub async fn run_agent_attempt(
         )
         .await;
 
-        let effective_cmd = crate::config::effective_agent_command(&config);
-        let command_parts: Vec<&str> = effective_cmd.split_whitespace().collect();
+        let launch_cmd = crate::config::agent_launch_command(&config);
+        let command_parts: Vec<&str> = launch_cmd.split_whitespace().collect();
         let (cmd, args): (&str, &[&str]) = match command_parts.split_first() {
             Some((cmd, args)) => (*cmd, args),
             None => {
-                warn!("effective agent command is empty, falling back to copilot --acp --stdio");
-                ("copilot", &["--acp", "--stdio"])
+                warn!("agent.command is empty, falling back to copilot --acp");
+                ("copilot", &["--acp", "--yolo", "--no-ask-user"][..])
             }
         };
 

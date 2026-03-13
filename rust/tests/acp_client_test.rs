@@ -182,9 +182,18 @@ fn classify_event_turn_failed_returns_reason() {
 }
 
 #[test]
-fn classify_event_session_message_completed_returns_completed() {
-    let event = classify_event(&notification("session/message/completed", json!({})));
+fn classify_event_session_update_with_completed_status() {
+    let event = classify_event(&notification(
+        "session/update",
+        json!({"status": "completed"}),
+    ));
     assert!(matches!(event, AgentEvent::TurnCompleted));
+}
+
+#[test]
+fn classify_event_session_update_generic_is_notification() {
+    let event = classify_event(&notification("session/update", json!({})));
+    assert!(matches!(event, AgentEvent::Notification { .. }));
 }
 
 #[test]
@@ -203,7 +212,7 @@ fn classify_event_unknown_method_returns_notification() {
 #[test]
 fn classify_event_approval_required_returns_payload() {
     let payload = json!({ "id": "approval-123", "kind": "tool" });
-    let event = classify_event(&notification("session/approvalRequired", payload.clone()));
+    let event = classify_event(&notification("session/request_permission", payload.clone()));
 
     match event {
         AgentEvent::ApprovalRequired(value) => assert_eq!(value, payload),
@@ -214,11 +223,15 @@ fn classify_event_approval_required_returns_payload() {
 #[test]
 fn classify_event_token_usage_returns_counts() {
     let event = classify_event(&notification(
-        "session/tokenUsage",
+        "session/update",
         json!({
-            "input_tokens": 11,
-            "output_tokens": 7,
-            "total_tokens": 18
+            "tokenUsage": {
+                "total": {
+                    "inputTokens": 11,
+                    "outputTokens": 7,
+                    "totalTokens": 18
+                }
+            }
         }),
     ));
 
@@ -255,7 +268,7 @@ fn extract_token_usage_reads_nested_usage_object() {
 #[test]
 fn extract_token_usage_reads_camel_case_top_level() {
     let msg = notification(
-        "session/tokenUsage",
+        "session/update",
         json!({
             "inputTokens": 100,
             "outputTokens": 50,
@@ -294,4 +307,53 @@ fn turn_result_completed_pattern_matches() {
         TurnResult::Completed { turn_id } => assert_eq!(turn_id, "turn-42"),
         other => panic!("expected Completed result, got {other:?}"),
     }
+}
+
+// --- Bug #49: Permission request handling ---
+
+/// Server-initiated requests (like session/request_permission) have an id field.
+/// They must be responded to with a JSON-RPC response, not a new request.
+#[test]
+fn server_request_has_id_and_method() {
+    // A server-initiated permission request looks like this:
+    let msg = JsonRpcMessage {
+        jsonrpc: Some("2.0".to_string()),
+        id: Some(json!(42)), // HAS an id — it's a request
+        method: Some("session/request_permission".to_string()),
+        result: None,
+        error: None,
+        params: Some(json!({
+            "permissions": [{"tool": "shell", "command": "gh issue view 39"}]
+        })),
+    };
+
+    // It should be classified as ApprovalRequired
+    let event = classify_event(&msg);
+    assert!(
+        matches!(event, AgentEvent::ApprovalRequired(_)),
+        "server request_permission should be ApprovalRequired, got {event:?}"
+    );
+}
+
+/// AcpClient must have a send_response method for responding to server-initiated requests.
+/// This is different from send_request (which creates a new request with a new id).
+#[test]
+fn json_rpc_response_serializes_correctly() {
+    use rusty::agent::acp_client::JsonRpcResponse;
+
+    let response = JsonRpcResponse {
+        jsonrpc: "2.0".to_string(),
+        id: json!(42),
+        result: Some(json!({"outcome": {"outcome": "approved"}})),
+        error: None,
+    };
+
+    let serialized = serde_json::to_string(&response).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+
+    assert_eq!(parsed["jsonrpc"], "2.0");
+    assert_eq!(parsed["id"], 42);
+    assert_eq!(parsed["result"]["outcome"]["outcome"], "approved");
+    // Must NOT have a "method" field — it's a response, not a request
+    assert!(parsed.get("method").is_none());
 }

@@ -64,6 +64,18 @@ impl JsonRpcMessage {
     }
 }
 
+/// JSON-RPC 2.0 response — sent to answer server-initiated requests.
+/// Unlike JsonRpcRequest, this has no `method` field.
+#[derive(Debug, Serialize)]
+pub struct JsonRpcResponse {
+    pub jsonrpc: String,
+    pub id: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<Value>,
+}
+
 /// Guard that kills the child process on drop.
 pub struct ChildGuard {
     child: Option<Child>,
@@ -195,6 +207,24 @@ impl AcpClient {
         Ok(())
     }
 
+    /// Send a JSON-RPC response to a server-initiated request.
+    /// This responds with the server's request ID — NOT a new request.
+    pub async fn send_response(&mut self, id: Value, result: Value) -> Result<(), AgentError> {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: id.clone(),
+            result: Some(result),
+            error: None,
+        };
+
+        let mut line = serde_json::to_string(&resp)?;
+        line.push('\n');
+        self.stdin.write_all(line.as_bytes()).await?;
+        self.stdin.flush().await?;
+        debug!(%id, "sent JSON-RPC response");
+        Ok(())
+    }
+
     /// Read the next JSON-RPC message from stdout.
     /// Returns None only when the stream is closed (process exited).
     pub async fn read_message(&mut self) -> Result<Option<JsonRpcMessage>, AgentError> {
@@ -249,6 +279,7 @@ impl AcpClient {
     /// Sends initialize request, waits for response, sends initialized notification.
     pub async fn handshake(&mut self, read_timeout_ms: u64) -> Result<JsonRpcMessage, AgentError> {
         let init_params = serde_json::json!({
+            "protocolVersion": 1,
             "clientInfo": {
                 "name": "rusty",
                 "version": env!("CARGO_PKG_VERSION")
@@ -277,35 +308,50 @@ impl AcpClient {
     pub async fn create_session(
         &mut self,
         cwd: &Path,
-        approval_policy: &str,
-        sandbox: Option<&str>,
+        _approval_policy: &str,
+        _sandbox: Option<&str>,
         read_timeout_ms: u64,
     ) -> Result<String, AgentError> {
-        let mut params = serde_json::json!({
-            "approvalPolicy": approval_policy,
+        let params = serde_json::json!({
             "cwd": cwd.to_string_lossy(),
+            "mcpServers": [],
         });
-        if let Some(sb) = sandbox {
-            params["sandbox"] = serde_json::json!(sb);
-        }
 
-        let id = self.send_request("session/create", Some(params)).await?;
+        let id = self.send_request("session/new", Some(params)).await?;
         let response = self.read_response(id, read_timeout_ms).await?;
 
         if let Some(err) = &response.error {
-            return Err(AgentError::TurnFailed(format!(
-                "session/create failed: {err}"
-            )));
+            return Err(AgentError::TurnFailed(format!("session/new failed: {err}")));
         }
 
+        // Extract session ID — check multiple response shapes
         let session_id = response
             .result
             .as_ref()
-            .and_then(|r| r.get("session").or_else(|| r.get("thread")))
-            .and_then(|s| s.get("id"))
-            .and_then(Value::as_str)
+            .and_then(|r| {
+                // Try: result.sessionId (string)
+                r.get("sessionId")
+                    .and_then(Value::as_str)
+                    // Try: result.session.id
+                    .or_else(|| {
+                        r.get("session")
+                            .and_then(|s| s.get("id"))
+                            .and_then(Value::as_str)
+                    })
+                    // Try: result.id
+                    .or_else(|| r.get("id").and_then(Value::as_str))
+            })
             .map(ToOwned::to_owned)
-            .ok_or_else(|| AgentError::TurnFailed("no session ID in response".to_string()))?;
+            .ok_or_else(|| {
+                let result_str = response
+                    .result
+                    .as_ref()
+                    .map(|r| r.to_string())
+                    .unwrap_or_default();
+                AgentError::TurnFailed(format!(
+                    "no session ID in session.create response: {result_str}"
+                ))
+            })?;
 
         tracing::info!(%session_id, "ACP session created");
         Ok(session_id)
@@ -319,53 +365,109 @@ impl AcpClient {
         &mut self,
         session_id: &str,
         prompt: &str,
-        title: &str,
-        cwd: &Path,
-        approval_policy: &str,
-        sandbox_policy: Option<&serde_json::Value>,
+        _title: &str,
+        _cwd: &Path,
+        _approval_policy: &str,
+        _sandbox_policy: Option<&serde_json::Value>,
         turn_timeout_ms: u64,
         mut on_event: impl FnMut(AgentEvent),
     ) -> Result<TurnResult, AgentError> {
-        let mut params = serde_json::json!({
-            "threadId": session_id,
-            "input": [{"type": "text", "text": prompt}],
-            "cwd": cwd.to_string_lossy(),
-            "title": title,
-            "approvalPolicy": approval_policy,
+        // ACP session/prompt params: sessionId + prompt array
+        let params = serde_json::json!({
+            "sessionId": session_id,
+            "prompt": [{"type": "text", "text": prompt}],
         });
-        if let Some(sp) = sandbox_policy {
-            params["sandboxPolicy"] = sp.clone();
-        }
 
-        let id = self
-            .send_request("session/message/send", Some(params))
-            .await?;
+        let prompt_id = self.send_request("session/prompt", Some(params)).await?;
 
-        let ack = self.read_response(id, 10_000).await?;
-        if let Some(err) = &ack.error {
-            return Err(AgentError::TurnFailed(format!("turn start failed: {err}")));
-        }
+        // session/prompt streams session/update notifications before returning
+        // a final response with stopReason. Use the full turn timeout.
+        let turn_id = "turn-1".to_string();
 
-        let turn_id = ack
-            .result
-            .as_ref()
-            .and_then(|r| r.get("turn").or_else(|| r.get("id")))
-            .and_then(|t| {
-                if let Some(id) = t.as_str() {
-                    Some(id.to_string())
-                } else {
-                    t.get("id").and_then(Value::as_str).map(ToOwned::to_owned)
-                }
-            })
-            .unwrap_or_else(|| "unknown".to_string());
-
-        debug!(%turn_id, "turn started, streaming events");
+        debug!(%turn_id, "prompt sent, streaming events");
 
         let timeout = tokio::time::Duration::from_millis(turn_timeout_ms);
         let result = tokio::time::timeout(timeout, async {
             loop {
                 match self.read_message().await? {
                     Some(msg) => {
+                        // Check if this is the final response to our prompt request
+                        if let Some(id) = &msg.id {
+                            if id.as_u64() == Some(prompt_id) {
+                                // This is the prompt result
+                                if let Some(err) = &msg.error {
+                                    return Ok(TurnResult::Failed {
+                                        turn_id: turn_id.clone(),
+                                        reason: err.to_string(),
+                                    });
+                                }
+
+                                // Extract usage from prompt response
+                                if let Some(usage) = msg.result.as_ref().and_then(|r| r.get("usage")) {
+                                    let input = usage.get("input_tokens")
+                                        .or_else(|| usage.get("inputTokens"))
+                                        .and_then(Value::as_u64).unwrap_or(0);
+                                    let output = usage.get("output_tokens")
+                                        .or_else(|| usage.get("outputTokens"))
+                                        .and_then(Value::as_u64).unwrap_or(0);
+                                    let total = usage.get("total_tokens")
+                                        .or_else(|| usage.get("totalTokens"))
+                                        .and_then(Value::as_u64).unwrap_or(0);
+                                    tracing::info!(input, output, total, "token usage from prompt response");
+                                    on_event(AgentEvent::TokenUsage { input, output, total });
+                                }
+
+                                let stop_reason = msg
+                                    .result
+                                    .as_ref()
+                                    .and_then(|r| r.get("stopReason"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("end_turn");
+                                return match stop_reason {
+                                    "end_turn" => Ok(TurnResult::Completed {
+                                        turn_id: turn_id.clone(),
+                                    }),
+                                    "cancelled" => Ok(TurnResult::Cancelled {
+                                        turn_id: turn_id.clone(),
+                                    }),
+                                    _ => Ok(TurnResult::Completed {
+                                        turn_id: turn_id.clone(),
+                                    }),
+                                };
+                            }
+                        }
+
+                        // Handle server-initiated requests (has id + method).
+                        // These MUST be responded to with a JSON-RPC response.
+                        if let (Some(id), Some(method)) = (&msg.id, &msg.method) {
+                            let request_id = id.clone();
+                            match method.as_str() {
+                                "session/request_permission" => {
+                                    tracing::info!(%request_id, "auto-approving permission request");
+                                    let _ = self
+                                        .send_response(
+                                            request_id,
+                                            serde_json::json!({
+                                                "outcome": {"outcome": "approved"}
+                                            }),
+                                        )
+                                        .await;
+                                    on_event(AgentEvent::ApprovalRequired(
+                                        msg.params.clone().unwrap_or_default(),
+                                    ));
+                                    continue;
+                                }
+                                _ => {
+                                    tracing::debug!(%request_id, %method, "unknown server request");
+                                    let _ = self
+                                        .send_response(request_id, serde_json::json!({}))
+                                        .await;
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // Streaming notification (no id, or response we already handled)
                         let event = classify_event(&msg);
                         on_event(event.clone());
 
@@ -389,17 +491,7 @@ impl AcpClient {
                             AgentEvent::UserInputRequired => {
                                 return Err(AgentError::TurnInputRequired);
                             }
-                            AgentEvent::ApprovalRequired(payload) => {
-                                if let Some(id) = payload.get("id").and_then(Value::as_str) {
-                                    let _ = self
-                                        .send_request(
-                                            "approval/respond",
-                                            Some(serde_json::json!({"id": id, "approved": true})),
-                                        )
-                                        .await;
-                                }
-                            }
-                            _ => {}
+                            _ => {} // Notifications — continue streaming
                         }
                     }
                     None => return Err(AgentError::ProcessExit(-1)),
@@ -438,8 +530,8 @@ pub fn classify_event(msg: &JsonRpcMessage) -> AgentEvent {
     let method = msg.method.as_deref().unwrap_or("");
 
     match method {
-        "turn/completed" | "session/message/completed" => AgentEvent::TurnCompleted,
-        "turn/failed" | "session/message/failed" => {
+        "turn/completed" => AgentEvent::TurnCompleted,
+        "turn/failed" => {
             let reason = msg
                 .params
                 .as_ref()
@@ -453,18 +545,93 @@ pub fn classify_event(msg: &JsonRpcMessage) -> AgentEvent {
                 .unwrap_or_else(|| "unknown".to_string());
             AgentEvent::TurnFailed(reason)
         }
-        "turn/cancelled" | "session/message/cancelled" => AgentEvent::TurnCancelled,
-        "item/tool/requestUserInput" | "session/userInputRequired" => AgentEvent::UserInputRequired,
-        "item/tool/approvalRequired" | "session/approvalRequired" => {
+        "turn/cancelled" | "session/cancel" => AgentEvent::TurnCancelled,
+        "session/request_permission" => {
+            // Could be approval or user input — check payload
+            let params = msg.params.as_ref();
+            let is_user_input =
+                params.and_then(|p| p.get("type")).and_then(Value::as_str) == Some("userInput");
+            if is_user_input {
+                AgentEvent::UserInputRequired
+            } else {
+                AgentEvent::ApprovalRequired(msg.params.clone().unwrap_or_default())
+            }
+        }
+        "item/tool/requestUserInput" => AgentEvent::UserInputRequired,
+        "item/tool/approvalRequired" => {
             AgentEvent::ApprovalRequired(msg.params.clone().unwrap_or_default())
         }
-        "thread/tokenUsage/updated" | "session/tokenUsage" => {
+        "thread/tokenUsage/updated" => {
             let (input, output, total) = extract_token_usage(msg);
             AgentEvent::TokenUsage {
                 input,
                 output,
                 total,
             }
+        }
+        "session/update" => {
+            // General update — inspect payload to determine type
+            let params = msg.params.as_ref();
+
+            // Check for usage_update (ACP schema: params.update.sessionUpdate)
+            let update_type = params
+                .and_then(|p| p.get("update"))
+                .and_then(|u| u.get("sessionUpdate"))
+                .and_then(Value::as_str);
+
+            if update_type == Some("usage_update") {
+                let update = params.and_then(|p| p.get("update"));
+                let used = update
+                    .and_then(|u| u.get("used"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let size = update
+                    .and_then(|u| u.get("size"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                tracing::debug!(used, size, "context window usage update");
+                return AgentEvent::TokenUsage {
+                    input: used,
+                    output: 0,
+                    total: used,
+                };
+            }
+
+            // Check for token usage in other shapes
+            if params.is_some_and(|p| p.get("tokenUsage").is_some() || p.get("usage").is_some()) {
+                let (input, output, total) = extract_token_usage(msg);
+                return AgentEvent::TokenUsage {
+                    input,
+                    output,
+                    total,
+                };
+            }
+
+            // Check for completion/status
+            if let Some(status) = params.and_then(|p| p.get("status")).and_then(Value::as_str) {
+                return match status {
+                    "completed" | "done" => AgentEvent::TurnCompleted,
+                    "failed" | "error" => {
+                        let reason = params
+                            .and_then(|p| p.get("error"))
+                            .map(|e| e.to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        AgentEvent::TurnFailed(reason)
+                    }
+                    "cancelled" => AgentEvent::TurnCancelled,
+                    _ => AgentEvent::Notification {
+                        message: format!("status: {status}"),
+                    },
+                };
+            }
+
+            // Generic notification
+            let message = params
+                .and_then(|p| p.get("message").or_else(|| p.get("text")))
+                .and_then(Value::as_str)
+                .unwrap_or("session update")
+                .to_string();
+            AgentEvent::Notification { message }
         }
         _ => {
             let message = msg
