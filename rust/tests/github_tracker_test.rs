@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 
 use rusty::config::schema::TrackerConfig;
-use rusty::tracker::github::client::normalize_github_issue;
+use rusty::tracker::github::client::{normalize_github_issue, GitHubClient};
+use rusty::tracker::TrackerError;
 use serde_json::json;
+use wiremock::matchers::{header, method, path, query_param};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn github_config(state_labels: &[(&str, &str)]) -> TrackerConfig {
     TrackerConfig {
@@ -12,6 +15,17 @@ fn github_config(state_labels: &[(&str, &str)]) -> TrackerConfig {
             .map(|(label, state)| (label.to_string(), state.to_string()))
             .collect::<HashMap<_, _>>(),
         ..TrackerConfig::default()
+    }
+}
+
+fn test_tracker_config(server_url: &str) -> TrackerConfig {
+    TrackerConfig {
+        kind: Some("github".to_string()),
+        endpoint: Some(server_url.to_string()),
+        api_key: Some("test-token".to_string()),
+        owner: Some("testowner".to_string()),
+        repo: Some("testrepo".to_string()),
+        ..Default::default()
     }
 }
 
@@ -138,12 +152,6 @@ fn normalize_empty_labels_array_to_empty_vec() {
     assert!(issue.labels.is_empty());
 }
 
-// ── Bug reproduction tests (PR #24 Codex review feedback) ──
-
-/// P2 Bug: fetch_issues_by_states returns all issues in the open/closed bucket
-/// without filtering to the exact requested workflow states.
-/// With state_labels mapping, requesting ["Done"] should not return "Cancelled"
-/// or raw "closed" issues — only issues whose resolved state is "Done".
 #[test]
 fn fetch_by_states_must_filter_to_exact_requested_states() {
     let config = TrackerConfig {
@@ -158,7 +166,6 @@ fn fetch_by_states_must_filter_to_exact_requested_states() {
         ..TrackerConfig::default()
     };
 
-    // Issue with "done" label → resolved state "Done"
     let done_issue = normalize_github_issue(
         &json!({
             "number": 1, "title": "Completed task", "state": "closed",
@@ -170,7 +177,6 @@ fn fetch_by_states_must_filter_to_exact_requested_states() {
     .unwrap();
     assert_eq!(done_issue.state, "Done");
 
-    // Issue with "cancelled" label → resolved state "Cancelled"
     let cancelled_issue = normalize_github_issue(
         &json!({
             "number": 2, "title": "Cancelled task", "state": "closed",
@@ -182,7 +188,6 @@ fn fetch_by_states_must_filter_to_exact_requested_states() {
     .unwrap();
     assert_eq!(cancelled_issue.state, "Cancelled");
 
-    // Issue with no matching label → raw state "closed"
     let plain_closed = normalize_github_issue(
         &json!({
             "number": 3, "title": "Just closed", "state": "closed",
@@ -194,29 +199,256 @@ fn fetch_by_states_must_filter_to_exact_requested_states() {
     .unwrap();
     assert_eq!(plain_closed.state, "closed");
 
-    // Simulate what the adapter SHOULD do: post-filter to exact requested states
     let all = vec![done_issue, cancelled_issue, plain_closed];
-    let requested = vec!["Done".to_string()];
+    let requested = ["Done".to_string()];
     let requested_lower: Vec<String> = requested.iter().map(|s| s.to_lowercase()).collect();
     let filtered: Vec<_> = all
         .into_iter()
         .filter(|i| requested_lower.contains(&i.state.to_lowercase()))
         .collect();
 
-    // Only the "Done" issue should survive filtering
     assert_eq!(filtered.len(), 1, "should filter to exact requested states");
     assert_eq!(filtered[0].identifier, "demo-repo-1");
 }
 
-/// P1 Bug: GitHubClient must have a response_cache alongside its etag_cache.
-/// Without this, 304 Not Modified returns empty results.
-/// This structural test verifies the fix is in place.
 #[test]
 fn github_client_must_cache_responses_for_304_handling() {
-    use rusty::tracker::github::client::GitHubClient;
-    // This test will fail to compile if response_cache is missing from GitHubClient.
-    // The field must exist for 304 responses to return cached data.
     let _client = GitHubClient::new();
-    // If we get here, the struct has the response_cache field.
-    // Full 304 behavior is validated in integration tests (S21).
+}
+
+#[tokio::test]
+async fn fetch_issues_returns_normalized_issues() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {
+                "number": 1, "title": "First", "state": "open",
+                "labels": [{"name": "todo"}],
+                "html_url": "https://github.com/testowner/testrepo/issues/1",
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-02T00:00:00Z"
+            },
+            {
+                "number": 2, "title": "Second", "state": "open",
+                "labels": [], "created_at": "2024-01-01T00:00:00Z"
+            }
+        ])))
+        .mount(&server)
+        .await;
+
+    let client = GitHubClient::new();
+    let config = test_tracker_config(&server.uri());
+    let issues = client.fetch_issues(&config, "open", None).await.unwrap();
+
+    assert_eq!(issues.len(), 2);
+    assert_eq!(issues[0].identifier, "testrepo-1");
+    assert_eq!(issues[0].title, "First");
+    assert_eq!(
+        issues[0].url.as_deref(),
+        Some("https://github.com/testowner/testrepo/issues/1")
+    );
+    assert_eq!(issues[1].identifier, "testrepo-2");
+}
+
+#[tokio::test]
+async fn fetch_issues_handles_rate_limiting() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues"))
+        .respond_with(ResponseTemplate::new(429).insert_header("x-ratelimit-reset", "1700000000"))
+        .mount(&server)
+        .await;
+
+    let client = GitHubClient::new();
+    let config = test_tracker_config(&server.uri());
+    let result = client.fetch_issues(&config, "open", None).await;
+
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        TrackerError::RateLimited { .. }
+    ));
+}
+
+#[tokio::test]
+async fn fetch_issues_handles_server_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+        .mount(&server)
+        .await;
+
+    let client = GitHubClient::new();
+    let config = test_tracker_config(&server.uri());
+    let result = client.fetch_issues(&config, "open", None).await;
+
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        TrackerError::ApiStatus(500, ref body) if body == "Internal Server Error"
+    ));
+}
+
+#[tokio::test]
+async fn fetch_issues_caches_etag_and_returns_cached_on_304() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "\"abc123\"")
+                .set_body_json(json!([
+                    {"number": 1, "title": "Cached", "state": "open", "labels": []}
+                ])),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = GitHubClient::new();
+    let config = test_tracker_config(&server.uri());
+
+    let issues1 = client.fetch_issues(&config, "open", None).await.unwrap();
+    assert_eq!(issues1.len(), 1);
+
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues"))
+        .and(header("If-None-Match", "\"abc123\""))
+        .respond_with(ResponseTemplate::new(304))
+        .mount(&server)
+        .await;
+
+    let issues2 = client.fetch_issues(&config, "open", None).await.unwrap();
+    assert_eq!(issues2.len(), 1);
+    assert_eq!(issues2[0].title, "Cached");
+}
+
+#[tokio::test]
+async fn fetch_issues_by_numbers_returns_specific_issues() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues/42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!(
+            {"number": 42, "title": "Specific", "state": "open", "labels": []}
+        )))
+        .mount(&server)
+        .await;
+
+    let client = GitHubClient::new();
+    let config = test_tracker_config(&server.uri());
+    let issues = client
+        .fetch_issues_by_numbers(&config, &[42])
+        .await
+        .unwrap();
+
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].identifier, "testrepo-42");
+}
+
+#[tokio::test]
+async fn fetch_issues_skips_pull_requests() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"number": 1, "title": "Issue", "state": "open", "labels": []},
+            {"number": 2, "title": "PR", "state": "open", "labels": [], "pull_request": {"url": "..."}}
+        ])))
+        .mount(&server)
+        .await;
+
+    let client = GitHubClient::new();
+    let config = test_tracker_config(&server.uri());
+    let issues = client.fetch_issues(&config, "open", None).await.unwrap();
+
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].title, "Issue");
+}
+
+#[tokio::test]
+async fn fetch_issues_paginates_and_sends_label_filters() {
+    let server = MockServer::start().await;
+    let first_page: Vec<_> = (1..=50)
+        .map(|number| {
+            json!({
+                "number": number,
+                "title": format!("Issue {number}"),
+                "state": "open",
+                "labels": []
+            })
+        })
+        .collect();
+
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues"))
+        .and(query_param("state", "open"))
+        .and(query_param("per_page", "50"))
+        .and(query_param("page", "1"))
+        .and(query_param("labels", "bug,help-wanted"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(first_page))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues"))
+        .and(query_param("state", "open"))
+        .and(query_param("per_page", "50"))
+        .and(query_param("page", "2"))
+        .and(query_param("labels", "bug,help-wanted"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"number": 51, "title": "Issue 51", "state": "open", "labels": []}
+        ])))
+        .mount(&server)
+        .await;
+
+    let client = GitHubClient::new();
+    let config = test_tracker_config(&server.uri());
+    let labels = vec!["bug".to_string(), "help-wanted".to_string()];
+    let issues = client
+        .fetch_issues(&config, "open", Some(&labels))
+        .await
+        .unwrap();
+
+    assert_eq!(issues.len(), 51);
+    assert_eq!(issues[0].identifier, "testrepo-1");
+    assert_eq!(issues[50].identifier, "testrepo-51");
+}
+
+#[tokio::test]
+async fn fetch_issues_by_numbers_returns_rate_limit_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues/42"))
+        .respond_with(ResponseTemplate::new(429))
+        .mount(&server)
+        .await;
+
+    let client = GitHubClient::new();
+    let config = test_tracker_config(&server.uri());
+    let result = client.fetch_issues_by_numbers(&config, &[42]).await;
+
+    assert!(matches!(
+        result.unwrap_err(),
+        TrackerError::RateLimited { .. }
+    ));
+}
+
+#[tokio::test]
+async fn fetch_issues_by_numbers_skips_non_success_responses() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues/7"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let client = GitHubClient::new();
+    let config = test_tracker_config(&server.uri());
+    let issues = client.fetch_issues_by_numbers(&config, &[7]).await.unwrap();
+
+    assert!(issues.is_empty());
 }
