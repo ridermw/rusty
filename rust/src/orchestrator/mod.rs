@@ -346,12 +346,17 @@ fn apply_agent_update_to_state(
     session_id: Option<String>,
 ) {
     if let Some(entry) = state.running.get_mut(issue_id) {
-        entry.last_event = Some(event);
+        entry.last_event = Some(event.clone());
         entry.last_event_at = Some(Utc::now());
         entry.last_message = message;
 
         if let Some(session_id) = session_id {
             entry.session_id = Some(session_id);
+        }
+
+        // Increment turn count on turn completion events
+        if event == "turn_completed" || event == "completed" {
+            entry.turn_count += 1;
         }
 
         if let (Some(input_tokens), Some(output_tokens), Some(total_tokens)) =
