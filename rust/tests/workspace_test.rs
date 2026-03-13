@@ -67,11 +67,24 @@ fn sanitize_workspace_key_replaces_leading_symbol() {
 }
 
 #[test]
+fn sanitize_handles_empty_string() {
+    assert_eq!(sanitize_workspace_key(""), "");
+}
+
+#[test]
 fn workspace_path_joins_root_with_sanitized_key() {
     let root = tempdir().expect("create temp dir");
     let expected = root.path().join("rusty-42");
 
     assert_eq!(workspace_path(root.path(), "rusty-42"), expected);
+}
+
+#[test]
+fn workspace_path_with_special_chars_in_root() {
+    let root = std::path::Path::new("/tmp/my workspaces");
+    let path = workspace_path(root, "repo-1");
+
+    assert!(path.to_string_lossy().contains("repo-1"));
 }
 
 #[test]
@@ -155,6 +168,20 @@ fn create_for_issue_reuses_existing_directory() {
 }
 
 #[test]
+fn create_for_issue_handles_file_at_workspace_path() {
+    let root = tempdir().expect("create temp dir");
+    let ws_path = root.path().join("repo-1");
+    fs::write(&ws_path, "not a directory").expect("create blocking file");
+
+    let result = create_for_issue(root.path(), "repo-1");
+
+    match result {
+        Ok(workspace) => assert!(workspace.path.is_dir()),
+        Err(_) => {}
+    }
+}
+
+#[test]
 fn remove_workspace_removes_directory() {
     let root = tempdir().expect("create temp dir");
     let workspace = create_for_issue(root.path(), "rusty-42").expect("create workspace");
@@ -162,6 +189,15 @@ fn remove_workspace_removes_directory() {
     remove_workspace(root.path(), "rusty-42").expect("remove workspace");
 
     assert!(!workspace.path.exists());
+}
+
+#[test]
+fn remove_workspace_is_noop_for_nonexistent() {
+    let root = tempdir().expect("create temp dir");
+
+    let result = remove_workspace(root.path(), "nonexistent-42");
+
+    assert!(result.is_ok());
 }
 
 #[test]

@@ -243,6 +243,106 @@ async fn build_snapshot_returns_correct_counts() {
     assert_eq!(retry.error.as_deref(), Some("transient failure"));
 }
 
+#[test]
+fn build_snapshot_includes_retry_entries() {
+    use chrono::Utc;
+
+    let mut state = OrchestratorState::new(30_000, 10);
+    state.retry_attempts.insert(
+        "issue-1".to_string(),
+        RetryEntry {
+            issue_id: "issue-1".to_string(),
+            identifier: "repo-1".to_string(),
+            attempt: 3,
+            due_at: Utc::now(),
+            error: Some("timeout".to_string()),
+        },
+    );
+
+    let snapshot = build_snapshot(&state);
+    assert_eq!(snapshot.retrying_count, 1);
+    assert_eq!(snapshot.retrying[0].attempt, 3);
+    assert_eq!(snapshot.retrying[0].error, Some("timeout".to_string()));
+}
+
+#[tokio::test]
+async fn orchestrator_state_running_count_by_state() {
+    use chrono::Utc;
+    use rusty::tracker::memory::test_issue;
+
+    let mut state = OrchestratorState::new(30_000, 10);
+
+    let issue1 = test_issue("1", "repo-1", "Task 1", "open", Some(1));
+    state.running.insert(
+        "1".to_string(),
+        RunningEntry {
+            issue_id: "1".into(),
+            identifier: "repo-1".into(),
+            issue: issue1,
+            session_id: None,
+            last_event: None,
+            last_event_at: None,
+            last_message: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            last_reported_input: 0,
+            last_reported_output: 0,
+            last_reported_total: 0,
+            turn_count: 0,
+            retry_attempt: None,
+            started_at: Utc::now(),
+            worker_handle: tokio::spawn(async {}).abort_handle(),
+        },
+    );
+
+    assert_eq!(state.running_count(), 1);
+    assert_eq!(state.running_count_by_state("open"), 1);
+    assert_eq!(state.running_count_by_state("closed"), 0);
+    assert_eq!(state.available_global_slots(), 9);
+}
+
+#[tokio::test]
+async fn per_state_concurrency_blocks_dispatch() {
+    use chrono::Utc;
+    use rusty::tracker::memory::test_issue;
+    use std::collections::HashMap;
+
+    let mut config = RustyConfig::default();
+    config.tracker.active_states = vec!["open".to_string()];
+    config.tracker.terminal_states = vec!["closed".to_string()];
+    config.agent.max_concurrent_agents_by_state = HashMap::from([("open".to_string(), 1)]);
+
+    let mut state = OrchestratorState::new(30_000, 10);
+    let running_issue = test_issue("1", "repo-1", "Running", "open", Some(1));
+    state.running.insert(
+        "1".to_string(),
+        RunningEntry {
+            issue_id: "1".into(),
+            identifier: "repo-1".into(),
+            issue: running_issue,
+            session_id: None,
+            last_event: None,
+            last_event_at: None,
+            last_message: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            last_reported_input: 0,
+            last_reported_output: 0,
+            last_reported_total: 0,
+            turn_count: 0,
+            retry_attempt: None,
+            started_at: Utc::now(),
+            worker_handle: tokio::spawn(async {}).abort_handle(),
+        },
+    );
+    state.claimed.insert("1".to_string());
+
+    let new_issue = test_issue("2", "repo-2", "Waiting", "open", Some(2));
+    assert!(!is_eligible(&new_issue, &state, &config));
+}
+
 #[tokio::test]
 async fn apply_token_update_first_call_uses_absolute_values_as_deltas() {
     let issue = make_issue("1", "ISSUE-1", "open", Some(1));
