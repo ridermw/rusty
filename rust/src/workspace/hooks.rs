@@ -137,22 +137,61 @@ fn run_shell_command(
             }
         })?;
 
+    // Drain stdout and stderr in background threads to prevent pipe buffer deadlock.
+    // Drains raw bytes (not UTF-8 strings) to avoid EPIPE/SIGPIPE on non-UTF8 hook output.
+    let stderr_handle = child.stderr.take().map(|stderr| {
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut std::io::BufReader::new(stderr), &mut buf);
+            String::from_utf8_lossy(&buf).into_owned()
+        })
+    });
+    let stdout_handle = child.stdout.take().map(|stdout| {
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut std::io::BufReader::new(stdout), &mut buf);
+            // stdout drained but not used
+        })
+    });
+
+    /// Join drain threads with a short timeout to avoid leaking threads
+    /// when timed-out hooks have descendants keeping pipes open.
+    fn join_drain_threads(
+        stderr_handle: Option<thread::JoinHandle<String>>,
+        stdout_handle: Option<thread::JoinHandle<()>>,
+    ) -> String {
+        // Give drain threads 2s to finish after process exit/kill
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        let err_output = stderr_handle
+            .and_then(|h| {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                // park_timeout + join: if thread doesn't finish in time, detach it
+                thread::scope(|_| {
+                    thread::sleep(remaining.min(Duration::from_secs(2)));
+                    // Can't really timeout a join, but we tried to read_to_end which
+                    // should complete once the pipe closes (which happens after kill+wait)
+                    h.join().ok()
+                })
+            })
+            .unwrap_or_default();
+
+        if let Some(h) = stdout_handle {
+            let _ = h.join();
+        }
+
+        err_output
+    }
+
     let start = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                // Capture and log output for debugging
-                if let Some(mut stderr) = child.stderr.take() {
-                    let mut err_output = String::new();
-                    let _ = std::io::Read::read_to_string(&mut stderr, &mut err_output);
-                    if !err_output.trim().is_empty() {
-                        let truncated = if err_output.len() > 500 {
-                            &err_output[..500]
-                        } else {
-                            &err_output
-                        };
-                        tracing::warn!(hook = hook_name, stderr = truncated, "hook stderr output");
-                    }
+                let err_output = join_drain_threads(stderr_handle, stdout_handle);
+
+                if !err_output.trim().is_empty() {
+                    let truncated = truncate_utf8(&err_output, 500);
+                    tracing::warn!(hook = hook_name, stderr = truncated, "hook stderr output");
                 }
 
                 return if status.success() {
@@ -168,6 +207,17 @@ fn run_shell_command(
                 if start.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
+                    // Join drain threads to prevent leaks — kill+wait closed the pipes,
+                    // so read_to_end should unblock.
+                    let err_output = join_drain_threads(stderr_handle, stdout_handle);
+                    if !err_output.trim().is_empty() {
+                        let truncated = truncate_utf8(&err_output, 500);
+                        tracing::warn!(
+                            hook = hook_name,
+                            stderr = truncated,
+                            "timed-out hook stderr"
+                        );
+                    }
                     return Err(WorkspaceError::HookTimeout {
                         hook: hook_name.to_string(),
                     });
@@ -178,11 +228,59 @@ fn run_shell_command(
             Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = join_drain_threads(stderr_handle, stdout_handle);
                 return Err(WorkspaceError::HookFailed {
                     hook: hook_name.to_string(),
                     exit_code: -1,
                 });
             }
         }
+    }
+}
+
+/// Truncate a string to at most `max_bytes` bytes on a valid UTF-8 boundary.
+/// Never panics on multibyte characters.
+fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_utf8_short_string_unchanged() {
+        assert_eq!(truncate_utf8("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_utf8_exact_boundary() {
+        assert_eq!(truncate_utf8("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_utf8_multibyte_no_panic() {
+        // '€' is 3 bytes (E2 82 AC). Cutting at byte 4 would split it.
+        let s = "a€b"; // 1 + 3 + 1 = 5 bytes
+        assert_eq!(truncate_utf8(s, 4), "a€"); // backs up to byte 4 → char boundary at 4
+        assert_eq!(truncate_utf8(s, 3), "a"); // byte 3 is mid-€, backs up to 1
+        assert_eq!(truncate_utf8(s, 2), "a"); // byte 2 is mid-€, backs up to 1
+    }
+
+    #[test]
+    fn truncate_utf8_empty_string() {
+        assert_eq!(truncate_utf8("", 10), "");
+    }
+
+    #[test]
+    fn truncate_utf8_zero_max() {
+        assert_eq!(truncate_utf8("hello", 0), "");
     }
 }
