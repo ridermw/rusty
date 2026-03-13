@@ -59,19 +59,16 @@ for raw in sys.stdin:
     message_id = message.get("id")
 
     if method == "initialize":
-        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": {"capabilities": {}}}) + "\n")
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": {"protocolVersion": 1, "capabilities": {}}}) + "\n")
         sys.stdout.flush()
     elif method == "initialized":
         continue
-    elif method == "session/create":
-        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": {"session": {"id": session_id}}}) + "\n")
+    elif method == "session/new":
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": {"sessionId": session_id}}) + "\n")
         sys.stdout.flush()
-    elif method == "session/message/send":
+    elif method == "session/prompt":
         sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": {"turn": {"id": turn_id}}}) + "\n")
-        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "method": "session/message/completed", "params": {"turnId": turn_id}}) + "\n")
-        sys.stdout.flush()
-    elif method == "approval/respond":
-        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": {"approved": True}}) + "\n")
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"status": "completed", "turnId": turn_id}}) + "\n")
         sys.stdout.flush()
     else:
         sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": {}}) + "\n")

@@ -92,7 +92,7 @@ fn config_defaults_are_correct() {
     assert!(config.agent.max_concurrent_agents_by_state.is_empty());
     assert_eq!(config.agent.command, "copilot --acp --yolo --no-ask-user");
     assert_eq!(config.agent.turn_timeout_ms, 3_600_000);
-    assert_eq!(config.agent.read_timeout_ms, 5_000);
+    assert_eq!(config.agent.read_timeout_ms, 30_000);
     assert_eq!(config.agent.stall_timeout_ms, 300_000);
     assert_eq!(config.agent.approval_policy, "auto-approve");
 
