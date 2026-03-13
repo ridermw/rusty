@@ -308,3 +308,52 @@ fn turn_result_completed_pattern_matches() {
         other => panic!("expected Completed result, got {other:?}"),
     }
 }
+
+// --- Bug #49: Permission request handling ---
+
+/// Server-initiated requests (like session/request_permission) have an id field.
+/// They must be responded to with a JSON-RPC response, not a new request.
+#[test]
+fn server_request_has_id_and_method() {
+    // A server-initiated permission request looks like this:
+    let msg = JsonRpcMessage {
+        jsonrpc: Some("2.0".to_string()),
+        id: Some(json!(42)), // HAS an id — it's a request
+        method: Some("session/request_permission".to_string()),
+        result: None,
+        error: None,
+        params: Some(json!({
+            "permissions": [{"tool": "shell", "command": "gh issue view 39"}]
+        })),
+    };
+
+    // It should be classified as ApprovalRequired
+    let event = classify_event(&msg);
+    assert!(
+        matches!(event, AgentEvent::ApprovalRequired(_)),
+        "server request_permission should be ApprovalRequired, got {event:?}"
+    );
+}
+
+/// AcpClient must have a send_response method for responding to server-initiated requests.
+/// This is different from send_request (which creates a new request with a new id).
+#[test]
+fn json_rpc_response_serializes_correctly() {
+    use rusty::agent::acp_client::JsonRpcResponse;
+
+    let response = JsonRpcResponse {
+        jsonrpc: "2.0".to_string(),
+        id: json!(42),
+        result: Some(json!({"outcome": {"outcome": "approved"}})),
+        error: None,
+    };
+
+    let serialized = serde_json::to_string(&response).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+
+    assert_eq!(parsed["jsonrpc"], "2.0");
+    assert_eq!(parsed["id"], 42);
+    assert_eq!(parsed["result"]["outcome"]["outcome"], "approved");
+    // Must NOT have a "method" field — it's a response, not a request
+    assert!(parsed.get("method").is_none());
+}

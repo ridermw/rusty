@@ -64,6 +64,18 @@ impl JsonRpcMessage {
     }
 }
 
+/// JSON-RPC 2.0 response — sent to answer server-initiated requests.
+/// Unlike JsonRpcRequest, this has no `method` field.
+#[derive(Debug, Serialize)]
+pub struct JsonRpcResponse {
+    pub jsonrpc: String,
+    pub id: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<Value>,
+}
+
 /// Guard that kills the child process on drop.
 pub struct ChildGuard {
     child: Option<Child>,
@@ -192,6 +204,24 @@ impl AcpClient {
         self.stdin.write_all(line.as_bytes()).await?;
         self.stdin.flush().await?;
         debug!(method, "sent JSON-RPC notification");
+        Ok(())
+    }
+
+    /// Send a JSON-RPC response to a server-initiated request.
+    /// This responds with the server's request ID — NOT a new request.
+    pub async fn send_response(&mut self, id: Value, result: Value) -> Result<(), AgentError> {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: id.clone(),
+            result: Some(result),
+            error: None,
+        };
+
+        let mut line = serde_json::to_string(&resp)?;
+        line.push('\n');
+        self.stdin.write_all(line.as_bytes()).await?;
+        self.stdin.flush().await?;
+        debug!(%id, "sent JSON-RPC response");
         Ok(())
     }
 
@@ -391,7 +421,37 @@ impl AcpClient {
                             }
                         }
 
-                        // Otherwise it's a streaming notification
+                        // Handle server-initiated requests (has id + method).
+                        // These MUST be responded to with a JSON-RPC response.
+                        if let (Some(id), Some(method)) = (&msg.id, &msg.method) {
+                            let request_id = id.clone();
+                            match method.as_str() {
+                                "session/request_permission" => {
+                                    tracing::info!(%request_id, "auto-approving permission request");
+                                    let _ = self
+                                        .send_response(
+                                            request_id,
+                                            serde_json::json!({
+                                                "outcome": {"outcome": "approved"}
+                                            }),
+                                        )
+                                        .await;
+                                    on_event(AgentEvent::ApprovalRequired(
+                                        msg.params.clone().unwrap_or_default(),
+                                    ));
+                                    continue;
+                                }
+                                _ => {
+                                    tracing::debug!(%request_id, %method, "unknown server request");
+                                    let _ = self
+                                        .send_response(request_id, serde_json::json!({}))
+                                        .await;
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // Streaming notification (no id, or response we already handled)
                         let event = classify_event(&msg);
                         on_event(event.clone());
 
@@ -414,20 +474,6 @@ impl AcpClient {
                             }
                             AgentEvent::UserInputRequired => {
                                 return Err(AgentError::TurnInputRequired);
-                            }
-                            AgentEvent::ApprovalRequired(payload) => {
-                                // Auto-approve permission requests
-                                if let Some(req_id) = payload.get("id").and_then(Value::as_str) {
-                                    let _ = self
-                                        .send_request(
-                                            "session/request_permission",
-                                            Some(serde_json::json!({
-                                                "id": req_id,
-                                                "outcome": {"outcome": "approved"}
-                                            })),
-                                        )
-                                        .await;
-                                }
                             }
                             _ => {} // Notifications — continue streaming
                         }
