@@ -51,17 +51,58 @@ pub async fn run() -> anyhow::Result<()> {
     crate::config::validate_dispatch_config(&config)?;
     info!("Configuration validated");
 
-    let (orch_tx, _orch_rx) =
+    let (orch_tx, mut orch_rx) =
         tokio::sync::mpsc::channel::<crate::orchestrator::OrchestratorMsg>(256);
+
+    // Spawn a minimal orchestrator message consumer that handles snapshot/refresh
+    // requests. Without this, API calls would fill the channel buffer and hang.
+    // The full orchestrator loop (with dispatch/reconciliation) will replace this
+    // when wired end-to-end.
+    tokio::spawn(async move {
+        use crate::orchestrator::state::OrchestratorState;
+        use crate::orchestrator::{build_snapshot, OrchestratorMsg};
+
+        let state = OrchestratorState::new(30000, 10);
+        while let Some(msg) = orch_rx.recv().await {
+            match msg {
+                OrchestratorMsg::SnapshotRequest { reply } => {
+                    let _ = reply.send(build_snapshot(&state));
+                }
+                OrchestratorMsg::RefreshRequest { reply } => {
+                    let _ = reply.send(());
+                }
+                _ => {}
+            }
+        }
+    });
 
     if let Some(port) = args.port.or(config.server.port) {
         let tx = orch_tx.clone();
+        // Use a oneshot to detect server bind failures before continuing
+        let (server_ready_tx, server_ready_rx) =
+            tokio::sync::oneshot::channel::<Result<(), String>>();
         tokio::spawn(async move {
-            if let Err(e) = crate::server::start_server(port, tx).await {
-                error!(error = %e, "HTTP server failed");
+            let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+            match tokio::net::TcpListener::bind(addr).await {
+                Ok(listener) => {
+                    let _ = server_ready_tx.send(Ok(()));
+                    let app = crate::server::api::build_router(tx);
+                    info!(%addr, "HTTP server listening");
+                    if let Err(e) = axum::serve(listener, app).await {
+                        error!(error = %e, "HTTP server failed");
+                    }
+                }
+                Err(e) => {
+                    let _ = server_ready_tx.send(Err(e.to_string()));
+                }
             }
         });
-        info!(port, "HTTP server started");
+        // Wait for bind result — fail fast if port is unavailable
+        match server_ready_rx.await {
+            Ok(Ok(())) => info!(port, "HTTP server started"),
+            Ok(Err(e)) => anyhow::bail!("HTTP server failed to bind port {port}: {e}"),
+            Err(_) => anyhow::bail!("HTTP server task died before binding"),
+        }
     }
 
     info!("Symphony running. Press Ctrl+C to stop.");
