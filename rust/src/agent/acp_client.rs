@@ -249,6 +249,7 @@ impl AcpClient {
     /// Sends initialize request, waits for response, sends initialized notification.
     pub async fn handshake(&mut self, read_timeout_ms: u64) -> Result<JsonRpcMessage, AgentError> {
         let init_params = serde_json::json!({
+            "protocolVersion": 1,
             "clientInfo": {
                 "name": "rusty",
                 "version": env!("CARGO_PKG_VERSION")
