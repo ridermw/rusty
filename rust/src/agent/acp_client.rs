@@ -88,6 +88,27 @@ impl Drop for ChildGuard {
     }
 }
 
+/// Classified agent event from the ACP stream.
+#[derive(Debug, Clone)]
+pub enum AgentEvent {
+    TurnCompleted,
+    TurnFailed(String),
+    TurnCancelled,
+    UserInputRequired,
+    ApprovalRequired(serde_json::Value),
+    TokenUsage { input: u64, output: u64, total: u64 },
+    Notification { message: String },
+    Other(String),
+}
+
+/// Result of a completed turn.
+#[derive(Debug, Clone)]
+pub enum TurnResult {
+    Completed { turn_id: String },
+    Failed { turn_id: String, reason: String },
+    Cancelled { turn_id: String },
+}
+
 /// ACP client manages a Copilot CLI subprocess.
 pub struct AcpClient {
     guard: ChildGuard,
@@ -224,6 +245,175 @@ impl AcpClient {
         }
     }
 
+    /// Perform the ACP initialize handshake.
+    /// Sends initialize request, waits for response, sends initialized notification.
+    pub async fn handshake(&mut self, read_timeout_ms: u64) -> Result<JsonRpcMessage, AgentError> {
+        let init_params = serde_json::json!({
+            "clientInfo": {
+                "name": "rusty",
+                "version": env!("CARGO_PKG_VERSION")
+            },
+            "capabilities": {}
+        });
+
+        let id = self.send_request("initialize", Some(init_params)).await?;
+        let response = self.read_response(id, read_timeout_ms).await?;
+
+        if let Some(err) = &response.error {
+            return Err(AgentError::TurnFailed(format!("initialize failed: {err}")));
+        }
+
+        if let Some(result) = &response.result {
+            tracing::info!(capabilities = %result, "ACP server capabilities received");
+        }
+
+        self.send_notification("initialized", None).await?;
+
+        Ok(response)
+    }
+
+    /// Create a new ACP session (equivalent to Codex thread/start).
+    /// Returns the session/thread ID.
+    pub async fn create_session(
+        &mut self,
+        cwd: &Path,
+        approval_policy: &str,
+        sandbox: Option<&str>,
+        read_timeout_ms: u64,
+    ) -> Result<String, AgentError> {
+        let mut params = serde_json::json!({
+            "approvalPolicy": approval_policy,
+            "cwd": cwd.to_string_lossy(),
+        });
+        if let Some(sb) = sandbox {
+            params["sandbox"] = serde_json::json!(sb);
+        }
+
+        let id = self.send_request("session/create", Some(params)).await?;
+        let response = self.read_response(id, read_timeout_ms).await?;
+
+        if let Some(err) = &response.error {
+            return Err(AgentError::TurnFailed(format!(
+                "session/create failed: {err}"
+            )));
+        }
+
+        let session_id = response
+            .result
+            .as_ref()
+            .and_then(|r| r.get("session").or_else(|| r.get("thread")))
+            .and_then(|s| s.get("id"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| AgentError::TurnFailed("no session ID in response".to_string()))?;
+
+        tracing::info!(%session_id, "ACP session created");
+        Ok(session_id)
+    }
+
+    /// Send a message/turn to the session and stream responses.
+    /// Returns when the turn completes, fails, or times out.
+    /// Calls `on_event` for each streamed event.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_turn(
+        &mut self,
+        session_id: &str,
+        prompt: &str,
+        title: &str,
+        cwd: &Path,
+        approval_policy: &str,
+        sandbox_policy: Option<&serde_json::Value>,
+        turn_timeout_ms: u64,
+        mut on_event: impl FnMut(AgentEvent),
+    ) -> Result<TurnResult, AgentError> {
+        let mut params = serde_json::json!({
+            "threadId": session_id,
+            "input": [{"type": "text", "text": prompt}],
+            "cwd": cwd.to_string_lossy(),
+            "title": title,
+            "approvalPolicy": approval_policy,
+        });
+        if let Some(sp) = sandbox_policy {
+            params["sandboxPolicy"] = sp.clone();
+        }
+
+        let id = self
+            .send_request("session/message/send", Some(params))
+            .await?;
+
+        let ack = self.read_response(id, 10_000).await?;
+        if let Some(err) = &ack.error {
+            return Err(AgentError::TurnFailed(format!("turn start failed: {err}")));
+        }
+
+        let turn_id = ack
+            .result
+            .as_ref()
+            .and_then(|r| r.get("turn").or_else(|| r.get("id")))
+            .and_then(|t| {
+                if let Some(id) = t.as_str() {
+                    Some(id.to_string())
+                } else {
+                    t.get("id").and_then(Value::as_str).map(ToOwned::to_owned)
+                }
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+
+        debug!(%turn_id, "turn started, streaming events");
+
+        let timeout = tokio::time::Duration::from_millis(turn_timeout_ms);
+        let result = tokio::time::timeout(timeout, async {
+            loop {
+                match self.read_message().await? {
+                    Some(msg) => {
+                        let event = classify_event(&msg);
+                        on_event(event.clone());
+
+                        match &event {
+                            AgentEvent::TurnCompleted => {
+                                return Ok(TurnResult::Completed {
+                                    turn_id: turn_id.clone(),
+                                });
+                            }
+                            AgentEvent::TurnFailed(reason) => {
+                                return Ok(TurnResult::Failed {
+                                    turn_id: turn_id.clone(),
+                                    reason: reason.clone(),
+                                });
+                            }
+                            AgentEvent::TurnCancelled => {
+                                return Ok(TurnResult::Cancelled {
+                                    turn_id: turn_id.clone(),
+                                });
+                            }
+                            AgentEvent::UserInputRequired => {
+                                return Err(AgentError::TurnInputRequired);
+                            }
+                            AgentEvent::ApprovalRequired(payload) => {
+                                if let Some(id) = payload.get("id").and_then(Value::as_str) {
+                                    let _ = self
+                                        .send_request(
+                                            "approval/respond",
+                                            Some(serde_json::json!({"id": id, "approved": true})),
+                                        )
+                                        .await;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    None => return Err(AgentError::ProcessExit(-1)),
+                }
+            }
+        })
+        .await;
+
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(AgentError::TurnTimeout),
+        }
+    }
+
     /// Gracefully stop the subprocess.
     pub async fn stop(mut self) -> Result<(), AgentError> {
         drop(self.stdin);
@@ -241,4 +431,87 @@ impl AcpClient {
 
         Ok(())
     }
+}
+
+/// Classify a raw JSON-RPC message into a typed event.
+pub fn classify_event(msg: &JsonRpcMessage) -> AgentEvent {
+    let method = msg.method.as_deref().unwrap_or("");
+
+    match method {
+        "turn/completed" | "session/message/completed" => AgentEvent::TurnCompleted,
+        "turn/failed" | "session/message/failed" => {
+            let reason = msg
+                .params
+                .as_ref()
+                .and_then(|p| p.get("error").or_else(|| p.get("message")))
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| value.to_string())
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            AgentEvent::TurnFailed(reason)
+        }
+        "turn/cancelled" | "session/message/cancelled" => AgentEvent::TurnCancelled,
+        "item/tool/requestUserInput" | "session/userInputRequired" => AgentEvent::UserInputRequired,
+        "item/tool/approvalRequired" | "session/approvalRequired" => {
+            AgentEvent::ApprovalRequired(msg.params.clone().unwrap_or_default())
+        }
+        "thread/tokenUsage/updated" | "session/tokenUsage" => {
+            let (input, output, total) = extract_token_usage(msg);
+            AgentEvent::TokenUsage {
+                input,
+                output,
+                total,
+            }
+        }
+        _ => {
+            let message = msg
+                .params
+                .as_ref()
+                .and_then(|p| p.get("message").or_else(|| p.get("text")))
+                .and_then(Value::as_str)
+                .unwrap_or(method)
+                .to_string();
+            if method.is_empty() && msg.result.is_some() {
+                AgentEvent::Other("response".to_string())
+            } else {
+                AgentEvent::Notification { message }
+            }
+        }
+    }
+}
+
+pub fn extract_token_usage(msg: &JsonRpcMessage) -> (u64, u64, u64) {
+    let params = msg.params.as_ref();
+
+    // Try multiple payload shapes:
+    // 1. Top-level snake_case: params.input_tokens
+    // 2. Nested snake_case: params.usage.input_tokens
+    // 3. Top-level camelCase: params.inputTokens
+    // 4. Nested camelCase: params.tokenUsage.total.inputTokens
+    let get = |snake: &str, camel: &str| -> u64 {
+        params
+            .and_then(|p| {
+                p.get(snake)
+                    .or_else(|| p.get("usage").and_then(|u| u.get(snake)))
+                    .or_else(|| p.get(camel))
+                    .or_else(|| {
+                        p.get("tokenUsage")
+                            .and_then(|tu| tu.get("total").and_then(|t| t.get(camel)))
+                    })
+                    .or_else(|| {
+                        p.get("total_token_usage")
+                            .and_then(|tu| tu.get(snake).or_else(|| tu.get(camel)))
+                    })
+            })
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    (
+        get("input_tokens", "inputTokens"),
+        get("output_tokens", "outputTokens"),
+        get("total_tokens", "totalTokens"),
+    )
 }

@@ -13,7 +13,7 @@ A Rust implementation of [Symphony](../SPEC.md) that orchestrates coding agents 
 - **GitHub CLI** (`gh`) — [install](https://cli.github.com/)
 - **Copilot CLI** (`copilot`) — [install](https://docs.github.com/en/copilot/github-copilot-in-the-cli)
 - **PowerShell 7+** (Windows only, for hooks) — [install](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows)
-- **`GITHUB_TOKEN`** environment variable with scopes: `repo`, `read:discussion`, `project`
+- GitHub authentication via **`GITHUB_TOKEN`**, **`GH_TOKEN`**, or **`gh auth login`** with scopes: `repo`, `read:discussion`, `project`
 
 ### 1. Build
 
@@ -44,7 +44,7 @@ target/debug/rusty setup
 ./rusty setup
 ```
 
-This checks: `GITHUB_TOKEN`, `WORKFLOW.md`, Copilot CLI, GitHub CLI, and the logs directory.
+This checks GitHub auth (`GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth login`), `WORKFLOW.md`, Copilot CLI, GitHub CLI, and the logs directory.
 
 ### 3. Configure
 
@@ -125,7 +125,7 @@ Options:
 ### `rusty setup`
 
 Interactive environment checker. Verifies:
-1. `GITHUB_TOKEN` is set with sufficient length
+1. GitHub auth is available via `GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth login`
 2. `WORKFLOW.md` exists (checks current dir and `rust/`)
 3. Copilot CLI (`copilot`) is installed
 4. GitHub CLI (`gh`) is installed
@@ -162,7 +162,7 @@ target/release/rusty run --yolo    # Run with release binary
 - [ ] `cargo clippy -- -D warnings` — clean
 - [ ] Copy `target/release/rusty` to deploy location
 - [ ] Copy `WORKFLOW.md` to same directory as binary
-- [ ] Set `GITHUB_TOKEN` in environment
+- [ ] Set `GITHUB_TOKEN`/`GH_TOKEN` in environment or run `gh auth login`
 - [ ] Run `rusty setup` to verify
 - [ ] Run `rusty run --yolo` to start
 
@@ -171,7 +171,7 @@ target/release/rusty run --yolo    # Run with release binary
 | Aspect | Elixir reference | Rusty |
 |---|---|---|
 | Issue tracker | Linear (GraphQL) | **GitHub Issues** (REST + GraphQL) |
-| Auth | `LINEAR_API_KEY` | `GITHUB_TOKEN` |
+| Auth | `LINEAR_API_KEY` | `GITHUB_TOKEN` / `GH_TOKEN` / `gh auth login` |
 | Coding agent | Codex app-server | **Copilot CLI** (`copilot --acp --stdio`) |
 | Dynamic tool | `linear_graphql` | **`github_graphql`** |
 | Runtime | Elixir/OTP/BEAM | **Single static binary**, no runtime deps |

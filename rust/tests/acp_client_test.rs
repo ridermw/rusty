@@ -1,7 +1,10 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rusty::agent::acp_client::{AgentError, ChildGuard, JsonRpcMessage, JsonRpcRequest};
+use rusty::agent::acp_client::{
+    classify_event, extract_token_usage, AgentError, AgentEvent, ChildGuard, JsonRpcMessage,
+    JsonRpcRequest, TurnResult,
+};
 use serde_json::json;
 use tokio::process::Command;
 use tokio::time::sleep;
@@ -44,6 +47,17 @@ async fn process_exists(pid: u32) -> bool {
         .expect("process lookup should run");
 
     status.success()
+}
+
+fn notification(method: &str, params: serde_json::Value) -> JsonRpcMessage {
+    JsonRpcMessage {
+        jsonrpc: Some("2.0".to_string()),
+        id: None,
+        method: Some(method.to_string()),
+        result: None,
+        error: None,
+        params: Some(params),
+    }
 }
 
 #[tokio::test]
@@ -146,4 +160,138 @@ fn json_rpc_message_parse_line_sanitizes_inputs() {
 
     let err = JsonRpcMessage::parse_line("not-json").expect_err("invalid JSON should error");
     assert!(matches!(err, AgentError::Json(_)));
+}
+
+#[test]
+fn classify_event_turn_completed_returns_completed() {
+    let event = classify_event(&notification("turn/completed", json!({})));
+    assert!(matches!(event, AgentEvent::TurnCompleted));
+}
+
+#[test]
+fn classify_event_turn_failed_returns_reason() {
+    let event = classify_event(&notification(
+        "turn/failed",
+        json!({ "message": "model execution failed" }),
+    ));
+
+    match event {
+        AgentEvent::TurnFailed(reason) => assert!(reason.contains("model execution failed")),
+        other => panic!("expected TurnFailed, got {other:?}"),
+    }
+}
+
+#[test]
+fn classify_event_session_message_completed_returns_completed() {
+    let event = classify_event(&notification("session/message/completed", json!({})));
+    assert!(matches!(event, AgentEvent::TurnCompleted));
+}
+
+#[test]
+fn classify_event_unknown_method_returns_notification() {
+    let event = classify_event(&notification(
+        "session/progress",
+        json!({ "message": "still working" }),
+    ));
+
+    match event {
+        AgentEvent::Notification { message } => assert_eq!(message, "still working"),
+        other => panic!("expected Notification, got {other:?}"),
+    }
+}
+
+#[test]
+fn classify_event_approval_required_returns_payload() {
+    let payload = json!({ "id": "approval-123", "kind": "tool" });
+    let event = classify_event(&notification("session/approvalRequired", payload.clone()));
+
+    match event {
+        AgentEvent::ApprovalRequired(value) => assert_eq!(value, payload),
+        other => panic!("expected ApprovalRequired, got {other:?}"),
+    }
+}
+
+#[test]
+fn classify_event_token_usage_returns_counts() {
+    let event = classify_event(&notification(
+        "session/tokenUsage",
+        json!({
+            "input_tokens": 11,
+            "output_tokens": 7,
+            "total_tokens": 18
+        }),
+    ));
+
+    match event {
+        AgentEvent::TokenUsage {
+            input,
+            output,
+            total,
+        } => {
+            assert_eq!(input, 11);
+            assert_eq!(output, 7);
+            assert_eq!(total, 18);
+        }
+        other => panic!("expected TokenUsage, got {other:?}"),
+    }
+}
+
+#[test]
+fn extract_token_usage_reads_nested_usage_object() {
+    let msg = notification(
+        "thread/tokenUsage/updated",
+        json!({
+            "usage": {
+                "input_tokens": 3,
+                "output_tokens": 5,
+                "total_tokens": 8
+            }
+        }),
+    );
+
+    assert_eq!(extract_token_usage(&msg), (3, 5, 8));
+}
+
+#[test]
+fn extract_token_usage_reads_camel_case_top_level() {
+    let msg = notification(
+        "session/tokenUsage",
+        json!({
+            "inputTokens": 100,
+            "outputTokens": 50,
+            "totalTokens": 150
+        }),
+    );
+
+    assert_eq!(extract_token_usage(&msg), (100, 50, 150));
+}
+
+#[test]
+fn extract_token_usage_reads_camel_case_nested_token_usage() {
+    let msg = notification(
+        "thread/tokenUsage/updated",
+        json!({
+            "tokenUsage": {
+                "total": {
+                    "inputTokens": 200,
+                    "outputTokens": 80,
+                    "totalTokens": 280
+                }
+            }
+        }),
+    );
+
+    assert_eq!(extract_token_usage(&msg), (200, 80, 280));
+}
+
+#[test]
+fn turn_result_completed_pattern_matches() {
+    let result = TurnResult::Completed {
+        turn_id: "turn-42".to_string(),
+    };
+
+    match result {
+        TurnResult::Completed { turn_id } => assert_eq!(turn_id, "turn-42"),
+        other => panic!("expected Completed result, got {other:?}"),
+    }
 }

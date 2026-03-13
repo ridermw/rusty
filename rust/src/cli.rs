@@ -19,8 +19,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
                     rusty run --yolo --port 4000  # Start with web dashboard\n\n\
                   Docs: https://github.com/ridermw/rusty/blob/main/rust/README.md",
     after_help = "Environment variables:\n  \
-                  GITHUB_TOKEN    GitHub API token (required, or set in WORKFLOW.md)\n  \
-                  RUST_LOG        Log level filter (default: info)\n\n\
+                  GITHUB_TOKEN/GH_TOKEN  GitHub API token (or use gh auth login)\n  \
+                  RUST_LOG               Log level filter (default: info)\n\n\
                   Examples:\n  \
                   rusty run --yolo\n  \
                   rusty run --yolo --port 4000 --logs-root ./logs\n  \
@@ -73,14 +73,30 @@ async fn run_setup() -> anyhow::Result<()> {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
 
-    // Check GITHUB_TOKEN
-    print!("1. Checking GITHUB_TOKEN... ");
-    match std::env::var("GITHUB_TOKEN") {
-        Ok(t) if !t.is_empty() => println!("✅ set ({} chars)", t.len()),
-        _ => {
-            println!("❌ not set");
-            println!("   Set it with: $env:GITHUB_TOKEN = \"ghp_your_token_here\"");
-            println!("   Required scopes: repo, read:discussion, project");
+    print!("1. Checking GitHub auth... ");
+    let env_token = std::env::var("GITHUB_TOKEN")
+        .or_else(|_| std::env::var("GH_TOKEN"))
+        .ok()
+        .filter(|t| !t.is_empty());
+
+    if let Some(t) = env_token {
+        println!("✅ set via env ({} chars)", t.len());
+    } else {
+        match tokio::process::Command::new("gh")
+            .args(["auth", "token"])
+            .output()
+            .await
+        {
+            Ok(output) if output.status.success() => {
+                let t = String::from_utf8_lossy(&output.stdout);
+                let trimmed = t.trim();
+                if !trimmed.is_empty() {
+                    println!("✅ set via gh auth ({} chars)", trimmed.len());
+                } else {
+                    print_token_missing();
+                }
+            }
+            _ => print_token_missing(),
         }
     }
 
@@ -151,6 +167,13 @@ async fn run_setup() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn print_token_missing() {
+    println!("❌ not found");
+    println!("   Option 1: gh auth login");
+    println!("   Option 2: $env:GITHUB_TOKEN = \"ghp_your_token_here\"");
+    println!("   Required scopes: repo, read:discussion, project");
+}
+
 async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
     if !args.yolo {
         anyhow::bail!(
@@ -195,24 +218,34 @@ async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
     crate::config::validate_dispatch_config(&config)?;
     info!("Configuration validated");
 
-    let (orch_tx, mut orch_rx) =
+    let workspace_root = match config.workspace.root.as_deref() {
+        Some(raw) => std::path::PathBuf::from(crate::config::expand_home(raw)),
+        None => std::env::temp_dir().join("rusty_workspaces"),
+    };
+    std::fs::create_dir_all(&workspace_root)
+        .map_err(|e| anyhow::anyhow!("failed to create workspace root: {e}"))?;
+
+    let shell_executor: std::sync::Arc<dyn crate::workspace::hooks::ShellExecutor> =
+        std::sync::Arc::from(crate::workspace::hooks::default_shell_executor());
+
+    let tracker: std::sync::Arc<dyn crate::tracker::Tracker> = std::sync::Arc::new(
+        crate::tracker::github::adapter::GitHubAdapter::new(config.tracker.clone()),
+    );
+
+    let orch_state = crate::orchestrator::state::OrchestratorState::new(
+        config.polling.interval_ms,
+        config.agent.max_concurrent_agents,
+    );
+
+    let (orch_tx, orch_rx) =
         tokio::sync::mpsc::channel::<crate::orchestrator::OrchestratorMsg>(256);
 
+    let shutdown_tx = orch_tx.clone();
     tokio::spawn(async move {
-        use crate::orchestrator::state::OrchestratorState;
-        use crate::orchestrator::{build_snapshot, OrchestratorMsg};
-
-        let state = OrchestratorState::new(30000, 10);
-        while let Some(msg) = orch_rx.recv().await {
-            match msg {
-                OrchestratorMsg::SnapshotRequest { reply } => {
-                    let _ = reply.send(build_snapshot(&state));
-                }
-                OrchestratorMsg::RefreshRequest { reply } => {
-                    let _ = reply.send(());
-                }
-                _ => {}
-            }
+        if tokio::signal::ctrl_c().await.is_ok() {
+            let _ = shutdown_tx
+                .send(crate::orchestrator::OrchestratorMsg::Shutdown)
+                .await;
         }
     });
 
@@ -247,9 +280,19 @@ async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
     }
 
     println!("✅ Rusty is running. Press Ctrl+C to stop.");
-    tokio::signal::ctrl_c().await?;
-    println!("\n🛑 Shutdown signal received");
-    info!("Shutdown signal received");
 
+    crate::orchestrator::run_orchestrator(
+        orch_state,
+        config,
+        tracker,
+        workflow.prompt_template,
+        workspace_root,
+        shell_executor,
+        orch_rx,
+        orch_tx,
+    )
+    .await;
+
+    println!("\n🛑 Shutdown complete");
     Ok(())
 }

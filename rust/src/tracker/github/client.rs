@@ -25,9 +25,10 @@ impl GitHubClient {
         }
     }
 
-    fn resolve_token(config: &TrackerConfig) -> Result<String, TrackerError> {
-        let key = config.api_key.as_deref().unwrap_or("$GITHUB_TOKEN");
-        crate::config::resolve_env_value(key).map_err(|_| TrackerError::MissingApiKey)
+    async fn resolve_token(config: &TrackerConfig) -> Result<String, TrackerError> {
+        crate::config::resolve_github_token(config.api_key.as_deref())
+            .await
+            .map_err(|_| TrackerError::MissingApiKey)
     }
 
     fn issues_url(config: &TrackerConfig) -> Result<String, TrackerError> {
@@ -55,7 +56,7 @@ impl GitHubClient {
         state: &str,
         labels: Option<&[String]>,
     ) -> Result<Vec<Issue>, TrackerError> {
-        let token = Self::resolve_token(config)?;
+        let token = Self::resolve_token(config).await?;
         let base_url = Self::issues_url(config)?;
         let repo_name = Self::repo_name(config);
         let cache_key = format!("{base_url}?state={state}");
@@ -160,7 +161,7 @@ impl GitHubClient {
         config: &TrackerConfig,
         numbers: &[u64],
     ) -> Result<Vec<Issue>, TrackerError> {
-        let token = Self::resolve_token(config)?;
+        let token = Self::resolve_token(config).await?;
         let repo = config.full_repo().ok_or(TrackerError::MissingRepo)?;
         let endpoint = config
             .endpoint

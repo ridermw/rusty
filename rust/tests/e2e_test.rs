@@ -258,6 +258,154 @@ fn dashboard_renders_snapshot() {
     assert!(output.contains("700"));
 }
 
+/// Smoke test: orchestrator loop polls MemoryTracker, dispatches eligible issues,
+/// and the HTTP API returns live state.
+#[tokio::test]
+async fn smoke_test_orchestrator_polls_and_dispatches() {
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use rusty::orchestrator::{run_orchestrator, OrchestratorMsg};
+    use rusty::server::api::build_router;
+    use rusty::workspace::hooks::default_shell_executor;
+    use std::sync::Arc;
+    use tokio::sync::{mpsc, oneshot};
+    use tower::ServiceExt;
+
+    let mut config = test_config();
+    config.polling.interval_ms = 100;
+    config.agent.command = "echo".to_string();
+
+    let tracker = Arc::new(MemoryTracker::new(test_issues())) as Arc<dyn Tracker>;
+    let state = OrchestratorState::new(100, 2);
+    let shell: Arc<dyn rusty::workspace::hooks::ShellExecutor> =
+        Arc::from(default_shell_executor());
+    let tmp = tempdir().unwrap();
+    let workspace_root = tmp.path().to_path_buf();
+
+    let (tx, rx) = mpsc::channel::<OrchestratorMsg>(256);
+    let snapshot_tx = tx.clone();
+
+    let orch_handle = tokio::spawn(async move {
+        run_orchestrator(
+            state,
+            config,
+            tracker,
+            "Test prompt for {{ issue.identifier }}".to_string(),
+            workspace_root,
+            shell,
+            rx,
+            tx,
+        )
+        .await;
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _ = snapshot_tx
+        .send(OrchestratorMsg::SnapshotRequest { reply: reply_tx })
+        .await;
+
+    let snapshot = match tokio::time::timeout(tokio::time::Duration::from_secs(2), reply_rx).await {
+        Ok(Ok(snapshot)) => snapshot,
+        Ok(Err(_)) => {
+            let _ = snapshot_tx.send(OrchestratorMsg::Shutdown).await;
+            let _ = orch_handle.await;
+            return;
+        }
+        Err(_) => panic!("snapshot request timed out — orchestrator may be stuck"),
+    };
+
+    assert!(
+        snapshot.running_count + snapshot.retrying_count > 0,
+        "expected orchestrator activity after polling tick, snapshot: {snapshot:?}"
+    );
+
+    let app = build_router(snapshot_tx.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/state")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        payload["counts"]["running"].as_u64().unwrap(),
+        snapshot.running_count as u64
+    );
+    assert_eq!(
+        payload["counts"]["retrying"].as_u64().unwrap(),
+        snapshot.retrying_count as u64
+    );
+
+    let _ = snapshot_tx.send(OrchestratorMsg::Shutdown).await;
+    tokio::time::timeout(tokio::time::Duration::from_secs(2), orch_handle)
+        .await
+        .expect("orchestrator should shut down")
+        .expect("orchestrator task should not panic");
+}
+
+/// Verify that dispatching an issue creates a workspace directory.
+#[tokio::test]
+async fn dispatch_creates_workspace_directory() {
+    use rusty::orchestrator::{run_orchestrator, OrchestratorMsg};
+    use rusty::workspace::hooks::default_shell_executor;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let mut config = test_config();
+    config.polling.interval_ms = 100;
+    config.agent.command = "echo".to_string();
+
+    let issues = vec![test_issues().into_iter().next().unwrap()];
+    let tracker = Arc::new(MemoryTracker::new(issues.clone())) as Arc<dyn Tracker>;
+    let state = OrchestratorState::new(100, 1);
+    let shell: Arc<dyn rusty::workspace::hooks::ShellExecutor> =
+        Arc::from(default_shell_executor());
+    let tmp = tempdir().unwrap();
+    let workspace_root = tmp.path().to_path_buf();
+    let check_root = workspace_root.clone();
+
+    let (tx, rx) = mpsc::channel::<OrchestratorMsg>(256);
+    let shutdown_tx = tx.clone();
+
+    let orch_handle = tokio::spawn(async move {
+        run_orchestrator(
+            state,
+            config,
+            tracker,
+            "Work on {{ issue.identifier }}".to_string(),
+            workspace_root,
+            shell,
+            rx,
+            tx,
+        )
+        .await;
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    let _ = shutdown_tx.send(OrchestratorMsg::Shutdown).await;
+    tokio::time::timeout(tokio::time::Duration::from_secs(2), orch_handle)
+        .await
+        .expect("orchestrator should shut down")
+        .expect("orchestrator task should not panic");
+
+    let expected_ws = workspace::workspace_path(&check_root, &issues[0].identifier);
+    assert!(
+        expected_ws.exists(),
+        "workspace directory should be created at {:?}",
+        expected_ws
+    );
+}
+
 #[tokio::test]
 #[ignore]
 async fn live_e2e_with_real_github_and_copilot() {

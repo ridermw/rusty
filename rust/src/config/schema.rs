@@ -10,6 +10,8 @@ pub struct RustyConfig {
     pub hooks: HooksConfig,
     pub agent: AgentConfig,
     pub server: ServerConfig,
+    pub copilot: CopilotConfig,
+    pub github: GitHubCliConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -42,6 +44,30 @@ impl TrackerConfig {
             (_, Some(repo)) if repo.contains('/') => Some(repo.clone()),
             _ => None,
         }
+    }
+
+    /// Get effective active states: combines active_states with active_issue_labels.
+    pub fn effective_active_states(&self) -> Vec<String> {
+        let mut states: Vec<String> = self.active_states.clone();
+        for label in &self.active_issue_labels {
+            let lower = label.to_lowercase();
+            if !states.iter().any(|s| s.to_lowercase() == lower) {
+                states.push(label.clone());
+            }
+        }
+        states
+    }
+
+    /// Get effective terminal states: combines terminal_states with terminal_issue_labels.
+    pub fn effective_terminal_states(&self) -> Vec<String> {
+        let mut states: Vec<String> = self.terminal_states.clone();
+        for label in &self.terminal_issue_labels {
+            let lower = label.to_lowercase();
+            if !states.iter().any(|s| s.to_lowercase() == lower) {
+                states.push(label.clone());
+            }
+        }
+        states
     }
 }
 
@@ -156,6 +182,48 @@ impl Default for ServerConfig {
         Self {
             port: None,
             host: Some("127.0.0.1".to_string()),
+        }
+    }
+}
+
+/// Copilot CLI configuration (maps to copilot.* in WORKFLOW.md)
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CopilotConfig {
+    pub command: String,
+    pub chat_command: Option<String>,
+    pub approval_policy: String,
+    pub thread_sandbox: Option<String>,
+    pub turn_sandbox_policy: Option<serde_yaml::Value>,
+}
+
+impl Default for CopilotConfig {
+    fn default() -> Self {
+        Self {
+            command: "copilot".to_string(),
+            chat_command: None,
+            approval_policy: "never".to_string(),
+            thread_sandbox: None,
+            turn_sandbox_policy: None,
+        }
+    }
+}
+
+/// GitHub CLI configuration (maps to github.* in WORKFLOW.md)
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct GitHubCliConfig {
+    pub cli_command: String,
+    pub default_branch: String,
+    pub required_pr_label: Option<String>,
+}
+
+impl Default for GitHubCliConfig {
+    fn default() -> Self {
+        Self {
+            cli_command: "gh".to_string(),
+            default_branch: "main".to_string(),
+            required_pr_label: None,
         }
     }
 }

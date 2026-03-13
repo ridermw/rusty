@@ -35,10 +35,16 @@ pub fn render_prompt(
     let mut issue_obj = Object::new();
     issue_obj.insert("id".into(), Value::scalar(issue.id.clone()));
     issue_obj.insert("identifier".into(), Value::scalar(issue.identifier.clone()));
+    // Aliases for WORKFLOW.md compatibility
+    issue_obj.insert("number".into(), Value::scalar(issue.identifier.clone()));
     issue_obj.insert("title".into(), Value::scalar(issue.title.clone()));
     issue_obj.insert(
         "description".into(),
         Value::scalar(issue.description.clone().unwrap_or_default()),
+    );
+    issue_obj.insert(
+        "body".into(),
+        Value::scalar(issue.description.as_deref().unwrap_or("").to_string()),
     );
     issue_obj.insert(
         "priority".into(),

@@ -29,6 +29,24 @@ fn renders_issue_identifier_and_title() {
 }
 
 #[test]
+fn renders_issue_number_alias() {
+    let issue = sample_issue();
+
+    let rendered = render_prompt("{{ issue.number }}", &issue, None).unwrap();
+
+    assert_eq!(rendered, "ISSUE-123");
+}
+
+#[test]
+fn renders_issue_body_alias() {
+    let issue = sample_issue();
+
+    let rendered = render_prompt("{{ issue.body }}", &issue, None).unwrap();
+
+    assert_eq!(rendered, "Render the workflow template");
+}
+
+#[test]
 fn renders_attempt_when_present() {
     let issue = sample_issue();
 
