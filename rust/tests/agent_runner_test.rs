@@ -42,16 +42,86 @@ fn marker_script(marker_name: &str) -> String {
     }
 }
 
+fn write_fake_acp_server(script_path: &Path) {
+    let script = r#"import json
+import sys
+
+session_id = "session-1"
+turn_id = "turn-1"
+
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+
+    message = json.loads(raw)
+    method = message.get("method")
+    message_id = message.get("id")
+
+    if method == "initialize":
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": {"capabilities": {}}}) + "\n")
+        sys.stdout.flush()
+    elif method == "initialized":
+        continue
+    elif method == "session/create":
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": {"session": {"id": session_id}}}) + "\n")
+        sys.stdout.flush()
+    elif method == "session/message/send":
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": {"turn": {"id": turn_id}}}) + "\n")
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "method": "session/message/completed", "params": {"turnId": turn_id}}) + "\n")
+        sys.stdout.flush()
+    elif method == "approval/respond":
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": {"approved": True}}) + "\n")
+        sys.stdout.flush()
+    else:
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": {}}) + "\n")
+        sys.stdout.flush()
+"#;
+
+    std::fs::write(script_path, script).expect("write fake ACP server script");
+}
+
+fn fake_acp_command(script_path: &Path) -> String {
+    let script = script_path.to_string_lossy().into_owned();
+    let candidates: &[(&str, &[&str])] = if cfg!(windows) {
+        &[("python", &[]), ("py", &["-3"]), ("py", &[])]
+    } else {
+        &[("python3", &[]), ("python", &[])]
+    };
+
+    for (command, args) in candidates {
+        if std::process::Command::new(command)
+            .args(*args)
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            let mut parts = vec![(*command).to_string()];
+            parts.extend(args.iter().map(|arg| (*arg).to_string()));
+            parts.push(script.clone());
+            return parts.join(" ");
+        }
+    }
+
+    panic!("no Python interpreter available for fake ACP test server");
+}
+
 #[tokio::test]
 async fn run_agent_attempt_with_valid_config_creates_workspace_and_returns_completed() {
     let workspace_root = tempdir().expect("create temp dir");
     let issue = sample_issue();
+    let script_path = workspace_root.path().join("fake_acp_server.py");
     let (update_tx, _update_rx) = mpsc::channel(8);
+    let mut config = RustyConfig::default();
+
+    write_fake_acp_server(&script_path);
+    config.agent.command = fake_acp_command(&script_path);
+    config.agent.max_turns = 1;
 
     let result = run_agent_attempt(
         issue.clone(),
         None,
-        RustyConfig::default(),
+        config,
         "{{ issue.identifier }}".to_string(),
         workspace_root.path().to_path_buf(),
         Arc::new(UnexpectedExecutor),
@@ -59,7 +129,10 @@ async fn run_agent_attempt_with_valid_config_creates_workspace_and_returns_compl
     )
     .await;
 
-    assert!(matches!(result, WorkerResult::Completed));
+    assert!(
+        matches!(result, WorkerResult::Completed),
+        "expected Completed result, got {result:?}"
+    );
     assert!(workspace_path(workspace_root.path(), &issue.identifier).is_dir());
 }
 
@@ -132,4 +205,46 @@ async fn after_run_hook_is_called_even_when_prompt_rendering_fails() {
         marker_path.is_file(),
         "after_run hook should create marker file"
     );
+}
+
+#[tokio::test]
+async fn agent_runner_attempts_to_launch_agent_process() {
+    use rusty::agent::{run_agent_attempt, AgentUpdate, WorkerResult};
+    use rusty::config::schema::RustyConfig;
+    use rusty::tracker::memory::test_issue;
+    use rusty::workspace::hooks::default_shell_executor;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    let tmp = tempdir().unwrap();
+    let issue = test_issue("1", "repo-1", "Test issue", "open", Some(1));
+
+    let mut config = RustyConfig::default();
+    config.agent.command = "nonexistent_binary_xyz_123".to_string();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel::<AgentUpdate>(16);
+    let shell = Arc::from(default_shell_executor());
+
+    let result = run_agent_attempt(
+        issue,
+        None,
+        config,
+        "Test prompt {{ issue.identifier }}".to_string(),
+        tmp.path().to_path_buf(),
+        shell,
+        tx,
+    )
+    .await;
+
+    match result {
+        WorkerResult::Failed(msg) => {
+            assert!(
+                msg.contains("not found") || msg.contains("agent") || msg.contains("launch"),
+                "expected agent launch error, got: {msg}"
+            );
+        }
+        WorkerResult::Completed => {
+            panic!("agent returned Completed without launching a process — Bug 35.1 not fixed");
+        }
+    }
 }
