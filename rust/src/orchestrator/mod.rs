@@ -255,6 +255,11 @@ pub fn reconcile_against_tracker(
         .collect()
 }
 
+/// After this many consecutive normal completions for the same issue
+/// without a state change, switch from 1s continuation retry to
+/// exponential backoff to avoid burning API calls on no-op workers.
+const MAX_CONTINUATION_RETRIES: u32 = 3;
+
 /// Calculate backoff delay in milliseconds for a retry attempt.
 pub fn calculate_backoff(attempt: u32, max_backoff_ms: u64, is_continuation: bool) -> u64 {
     if is_continuation {
@@ -265,6 +270,12 @@ pub fn calculate_backoff(attempt: u32, max_backoff_ms: u64, is_continuation: boo
     let exp = attempt.saturating_sub(1);
     let delay = base.saturating_mul(2u64.saturating_pow(exp));
     delay.min(max_backoff_ms)
+}
+
+/// Check if a continuation retry should be throttled.
+/// Returns true if the issue has had too many consecutive no-op completions.
+pub fn should_throttle_continuation(consecutive_completions: u32) -> bool {
+    consecutive_completions > MAX_CONTINUATION_RETRIES
 }
 
 /// Check if a retry attempt should trigger a warning log.
@@ -430,6 +441,7 @@ pub async fn run_orchestrator(
                         entry.worker_handle.abort();
                         add_runtime_seconds(&mut state.agent_totals, &entry);
                         state.claimed.remove(&issue_id);
+                        state.completed_counts.remove(&issue_id);
                     }
                 }
 
@@ -457,6 +469,7 @@ pub async fn run_orchestrator(
                                             );
                                             state.claimed.remove(&issue_id);
                                             state.retry_attempts.remove(&issue_id);
+                                            state.completed_counts.remove(&issue_id);
                                         }
                                     }
                                     ReconcileAction::StopNoCleanup(issue_id) => {
@@ -466,10 +479,14 @@ pub async fn run_orchestrator(
                                             add_runtime_seconds(&mut state.agent_totals, &entry);
                                             state.claimed.remove(&issue_id);
                                             state.retry_attempts.remove(&issue_id);
+                                            state.completed_counts.remove(&issue_id);
                                         }
                                     }
                                     ReconcileAction::UpdateState(issue_id, issue) => {
                                         if let Some(entry) = state.running.get_mut(&issue_id) {
+                                            if entry.issue.state != issue.state {
+                                                state.completed_counts.remove(&issue_id);
+                                            }
                                             entry.issue = *issue;
                                         }
                                     }
@@ -489,6 +506,11 @@ pub async fn run_orchestrator(
                         let candidate_ids: HashSet<String> = candidates.iter().map(|issue| issue.id.clone()).collect();
                         state.retry_attempts.retain(|issue_id, _| {
                             state.claimed.contains(issue_id) || candidate_ids.contains(issue_id)
+                        });
+                        state.completed_counts.retain(|issue_id, _| {
+                            state.running.contains_key(issue_id)
+                                || state.claimed.contains(issue_id)
+                                || candidate_ids.contains(issue_id)
                         });
 
                         sort_for_dispatch(&mut candidates);
@@ -581,19 +603,50 @@ pub async fn run_orchestrator(
                         tracing::info!(%issue_id, %success, ?error, "worker exited");
                         if let Some(entry) = state.running.remove(&issue_id) {
                             let retry_attempt = next_attempt(entry.retry_attempt, success);
-                            let delay_ms = calculate_backoff(
-                                retry_attempt,
-                                config.agent.max_retry_backoff_ms,
-                                success,
-                            );
 
                             add_runtime_seconds(&mut state.agent_totals, &entry);
-                            if success {
+                            let delay_ms = if success {
                                 state.completed.insert(issue_id.clone());
-                            }
-                            if !success && should_warn_retry(retry_attempt) {
-                                tracing::warn!(%issue_id, attempt = retry_attempt, ?error, "worker failed; scheduling retry");
-                            }
+                                let consecutive = state
+                                    .completed_counts
+                                    .entry(issue_id.clone())
+                                    .and_modify(|count| *count += 1)
+                                    .or_insert(1);
+
+                                if should_throttle_continuation(*consecutive) {
+                                    let delay = calculate_backoff(
+                                        *consecutive,
+                                        config.agent.max_retry_backoff_ms,
+                                        false,
+                                    );
+                                    tracing::warn!(
+                                        %issue_id,
+                                        consecutive = *consecutive,
+                                        delay_ms = delay,
+                                        "throttling continuation retry — issue may not need agent work"
+                                    );
+                                    delay
+                                } else {
+                                    let delay = calculate_backoff(
+                                        1,
+                                        config.agent.max_retry_backoff_ms,
+                                        true,
+                                    );
+                                    tracing::debug!(%issue_id, delay_ms = delay, "scheduling continuation retry");
+                                    delay
+                                }
+                            } else {
+                                state.completed_counts.remove(&issue_id);
+                                let delay = calculate_backoff(
+                                    retry_attempt,
+                                    config.agent.max_retry_backoff_ms,
+                                    false,
+                                );
+                                if should_warn_retry(retry_attempt) {
+                                    tracing::warn!(%issue_id, attempt = retry_attempt, ?error, "worker failed; scheduling retry");
+                                }
+                                delay
+                            };
 
                             state.retry_attempts.insert(
                                 issue_id.clone(),

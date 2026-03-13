@@ -507,6 +507,37 @@ fn calculate_backoff_caps_delay_at_max_backoff() {
 }
 
 #[test]
+fn calculate_backoff_increases_on_consecutive_continuations() {
+    use rusty::orchestrator::{calculate_backoff, should_throttle_continuation};
+
+    // First continuation: 1000ms (as before)
+    assert_eq!(calculate_backoff(1, 300_000, true), 1000);
+
+    // But if we track consecutive no-op completions, backoff should increase
+    // after a threshold.
+    let consecutive_completions = 4;
+    assert!(should_throttle_continuation(consecutive_completions));
+    assert_eq!(
+        calculate_backoff(consecutive_completions, 300_000, false),
+        80_000
+    );
+}
+
+#[test]
+fn should_throttle_continuation_after_threshold() {
+    use rusty::orchestrator::should_throttle_continuation;
+
+    // First few continuations are fine
+    assert!(!should_throttle_continuation(1));
+    assert!(!should_throttle_continuation(2));
+    assert!(!should_throttle_continuation(3));
+
+    // After 3 consecutive no-op completions without state change, throttle
+    assert!(should_throttle_continuation(4));
+    assert!(should_throttle_continuation(10));
+}
+
+#[test]
 fn should_warn_retry_returns_true_for_warning_thresholds() {
     assert!(should_warn_retry(5));
     assert!(should_warn_retry(10));
