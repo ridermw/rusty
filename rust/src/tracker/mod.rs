@@ -68,4 +68,17 @@ pub trait Tracker: Send + Sync {
         states: &[String],
         config: &TrackerConfig,
     ) -> Result<Vec<Issue>, TrackerError>;
+
+    /// Persist a session ID for the given issue (e.g. as a hidden comment).
+    async fn save_session_id(
+        &self,
+        issue_id: &str,
+        session_id: &str,
+    ) -> Result<(), TrackerError>;
+
+    /// Load the previously saved session ID for the given issue.
+    async fn load_session_id(&self, issue_id: &str) -> Result<Option<String>, TrackerError>;
+
+    /// Delete the saved session ID for the given issue (cleanup).
+    async fn delete_session_id(&self, issue_id: &str) -> Result<(), TrackerError>;
 }

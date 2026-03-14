@@ -590,6 +590,181 @@ impl<H: HttpClient + Clone, P: ProcessRunner> Tracker for GitHubAdapter<H, P> {
             .filter(|issue| requested.contains(&issue.state.to_lowercase()))
             .collect())
     }
+
+    async fn save_session_id(
+        &self,
+        issue_id: &str,
+        session_id: &str,
+    ) -> Result<(), TrackerError> {
+        let token = crate::config::resolve_github_token(self.config.api_key.as_deref())
+            .await
+            .map_err(|_| TrackerError::MissingApiKey)?;
+        let repo = self.config.full_repo().ok_or(TrackerError::MissingRepo)?;
+        let endpoint = self
+            .config
+            .endpoint
+            .as_deref()
+            .unwrap_or("https://api.github.com")
+            .trim_end_matches('/');
+
+        // Delete any existing session comment first to avoid duplicates
+        let _ = self.delete_session_id(issue_id).await;
+
+        let body = serde_json::json!({
+            "body": format!("<!-- rusty:session:{session_id} -->"),
+        });
+        let url = format!("{endpoint}/repos/{repo}/issues/{issue_id}/comments");
+        let bearer = format!("Bearer {token}");
+        let response = self
+            .http
+            .post(
+                &url,
+                &[
+                    ("Authorization", bearer.as_str()),
+                    ("Accept", "application/vnd.github+json"),
+                    ("User-Agent", "rusty/0.1"),
+                ],
+                Some(body.to_string().as_bytes()),
+            )
+            .await
+            .map_err(|err| TrackerError::ApiRequest(err.to_string()))?;
+
+        if response.status != 201 {
+            return Err(TrackerError::ApiStatus(
+                response.status,
+                response.text(),
+            ));
+        }
+
+        info!(
+            %issue_id,
+            %session_id,
+            "saved session ID as issue comment"
+        );
+        Ok(())
+    }
+
+    async fn load_session_id(&self, issue_id: &str) -> Result<Option<String>, TrackerError> {
+        let token = crate::config::resolve_github_token(self.config.api_key.as_deref())
+            .await
+            .map_err(|_| TrackerError::MissingApiKey)?;
+        let repo = self.config.full_repo().ok_or(TrackerError::MissingRepo)?;
+        let endpoint = self
+            .config
+            .endpoint
+            .as_deref()
+            .unwrap_or("https://api.github.com")
+            .trim_end_matches('/');
+
+        let url = format!("{endpoint}/repos/{repo}/issues/{issue_id}/comments?per_page=100");
+        let bearer = format!("Bearer {token}");
+        let response = self
+            .http
+            .get(
+                &url,
+                &[
+                    ("Authorization", bearer.as_str()),
+                    ("Accept", "application/vnd.github+json"),
+                    ("User-Agent", "rusty/0.1"),
+                ],
+            )
+            .await
+            .map_err(|err| TrackerError::ApiRequest(err.to_string()))?;
+
+        if response.status != 200 {
+            return Err(TrackerError::ApiStatus(
+                response.status,
+                response.text(),
+            ));
+        }
+
+        let comments: Vec<serde_json::Value> = response
+            .json()
+            .map_err(|err| TrackerError::UnknownPayload(err.to_string()))?;
+
+        for comment in &comments {
+            if let Some(body) = comment.get("body").and_then(|b| b.as_str()) {
+                if let Some(session_id) = extract_session_marker(body) {
+                    return Ok(Some(session_id.to_string()));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn delete_session_id(&self, issue_id: &str) -> Result<(), TrackerError> {
+        let token = crate::config::resolve_github_token(self.config.api_key.as_deref())
+            .await
+            .map_err(|_| TrackerError::MissingApiKey)?;
+        let repo = self.config.full_repo().ok_or(TrackerError::MissingRepo)?;
+        let endpoint = self
+            .config
+            .endpoint
+            .as_deref()
+            .unwrap_or("https://api.github.com")
+            .trim_end_matches('/');
+
+        let url = format!("{endpoint}/repos/{repo}/issues/{issue_id}/comments?per_page=100");
+        let bearer = format!("Bearer {token}");
+        let response = self
+            .http
+            .get(
+                &url,
+                &[
+                    ("Authorization", bearer.as_str()),
+                    ("Accept", "application/vnd.github+json"),
+                    ("User-Agent", "rusty/0.1"),
+                ],
+            )
+            .await
+            .map_err(|err| TrackerError::ApiRequest(err.to_string()))?;
+
+        if response.status != 200 {
+            return Ok(()); // best-effort
+        }
+
+        let comments: Vec<serde_json::Value> = response
+            .json()
+            .map_err(|err| TrackerError::UnknownPayload(err.to_string()))?;
+
+        for comment in &comments {
+            let body = comment.get("body").and_then(|b| b.as_str()).unwrap_or("");
+            if extract_session_marker(body).is_some() {
+                if let Some(comment_id) = comment.get("id").and_then(|id| id.as_u64()) {
+                    let delete_url =
+                        format!("{endpoint}/repos/{repo}/issues/comments/{comment_id}");
+                    let _ = self
+                        .http
+                        .post(
+                            &delete_url,
+                            &[
+                                ("Authorization", bearer.as_str()),
+                                ("Accept", "application/vnd.github+json"),
+                                ("User-Agent", "rusty/0.1"),
+                                ("X-HTTP-Method-Override", "DELETE"),
+                            ],
+                            None,
+                        )
+                        .await;
+                    info!(%issue_id, %comment_id, "deleted session comment");
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Session marker prefix used in GitHub issue comments.
+const SESSION_MARKER_PREFIX: &str = "<!-- rusty:session:";
+const SESSION_MARKER_SUFFIX: &str = " -->";
+
+/// Extract session ID from a comment body containing the marker.
+pub fn extract_session_marker(body: &str) -> Option<&str> {
+    let trimmed = body.trim();
+    let rest = trimmed.strip_prefix(SESSION_MARKER_PREFIX)?;
+    rest.strip_suffix(SESSION_MARKER_SUFFIX)
 }
 
 #[cfg(test)]
@@ -597,6 +772,9 @@ mod tests {
     use super::*;
     use crate::tracker::memory::test_issue;
     use serde_json::json;
+
+    // Concrete type alias avoids inference issues with async_trait impls.
+    type Adapter = GitHubAdapter<ReqwestHttpClient, TokioProcessRunner>;
 
     fn tracker_config() -> TrackerConfig {
         TrackerConfig {
@@ -726,7 +904,7 @@ mod tests {
         });
 
         let config = tracker_config();
-        let issues = GitHubAdapter::parse_project_items(&json, &config).unwrap();
+        let issues = Adapter::parse_project_items(&json, &config).unwrap();
 
         assert_eq!(issues.len(), 2);
 
@@ -788,7 +966,7 @@ mod tests {
         });
 
         let config = tracker_config();
-        let issues = GitHubAdapter::parse_project_items(&json, &config).unwrap();
+        let issues = Adapter::parse_project_items(&json, &config).unwrap();
 
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].title, "Real issue");
@@ -813,7 +991,7 @@ mod tests {
         });
 
         let config = tracker_config();
-        let issues = GitHubAdapter::parse_project_items(&json, &config).unwrap();
+        let issues = Adapter::parse_project_items(&json, &config).unwrap();
 
         assert!(issues.is_empty());
     }
@@ -837,7 +1015,7 @@ mod tests {
         });
 
         let config = tracker_config();
-        let issues = GitHubAdapter::parse_project_items(&json, &config).unwrap();
+        let issues = Adapter::parse_project_items(&json, &config).unwrap();
 
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].priority, Some(2));
@@ -848,7 +1026,7 @@ mod tests {
         let json = json!({});
 
         let config = tracker_config();
-        let result = GitHubAdapter::parse_project_items(&json, &config);
+        let result = Adapter::parse_project_items(&json, &config);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -863,7 +1041,7 @@ mod tests {
         let json = json!({"items": []});
 
         let config = tracker_config();
-        let issues = GitHubAdapter::parse_project_items(&json, &config).unwrap();
+        let issues = Adapter::parse_project_items(&json, &config).unwrap();
 
         assert!(issues.is_empty());
     }
@@ -877,7 +1055,7 @@ mod tests {
             test_issue("2", "rusty-2", "B", "Done", None),
         ];
 
-        let result = GitHubAdapter::filter_project_items(&items, &[]);
+        let result = Adapter::filter_project_items(&items, &[]);
 
         assert_eq!(result.len(), 2);
     }
@@ -892,7 +1070,7 @@ mod tests {
 
         // Case-insensitive: "todo" should match "Todo"
         let states = vec!["todo".to_string(), "done".to_string()];
-        let result = GitHubAdapter::filter_project_items(&items, &states);
+        let result = Adapter::filter_project_items(&items, &states);
 
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].id, "1");
@@ -903,21 +1081,21 @@ mod tests {
 
     #[test]
     fn is_graphql_rate_limited_detects_rate_limit() {
-        assert!(GitHubAdapter::is_graphql_rate_limited(
+        assert!(Adapter::is_graphql_rate_limited(
             "API rate limit exceeded for user"
         ));
     }
 
     #[test]
     fn is_graphql_rate_limited_detects_secondary_rate_limit() {
-        assert!(GitHubAdapter::is_graphql_rate_limited(
+        assert!(Adapter::is_graphql_rate_limited(
             "You have exceeded a secondary rate limit"
         ));
     }
 
     #[test]
     fn is_graphql_rate_limited_returns_false_for_other_errors() {
-        assert!(!GitHubAdapter::is_graphql_rate_limited("permission denied"));
+        assert!(!Adapter::is_graphql_rate_limited("permission denied"));
     }
 
     // ── extract_rate_limit_reset tests ─────────────────────────────────
@@ -925,7 +1103,7 @@ mod tests {
     #[test]
     fn extract_rate_limit_reset_parses_unix_timestamp() {
         let stderr = "some header\nx-ratelimit-reset: 1700000000\nother stuff";
-        let result = GitHubAdapter::extract_rate_limit_reset(stderr);
+        let result = Adapter::extract_rate_limit_reset(stderr);
 
         assert!(result.is_some());
         let dt = result.unwrap();
@@ -934,7 +1112,7 @@ mod tests {
 
     #[test]
     fn extract_rate_limit_reset_returns_none_on_garbage() {
-        assert!(GitHubAdapter::extract_rate_limit_reset("random garbage text").is_none());
+        assert!(Adapter::extract_rate_limit_reset("random garbage text").is_none());
     }
 
     // ── change_detection_url tests ─────────────────────────────────────
@@ -942,7 +1120,7 @@ mod tests {
     #[test]
     fn change_detection_url_returns_error_when_repo_missing() {
         let config = TrackerConfig::default(); // no owner/repo
-        let result = GitHubAdapter::change_detection_url(&config);
+        let result = Adapter::change_detection_url(&config);
 
         assert!(result.is_err());
         assert!(
@@ -955,13 +1133,13 @@ mod tests {
 
     #[test]
     fn cache_is_stale_returns_true_when_no_prior_fetch() {
-        let adapter = GitHubAdapter::new(tracker_config());
+        let adapter = Adapter::new(tracker_config());
         assert!(adapter.cache_is_stale());
     }
 
     #[test]
     fn cache_is_stale_returns_false_after_recent_update() {
-        let adapter = GitHubAdapter::new(tracker_config());
+        let adapter = Adapter::new(tracker_config());
         *adapter.last_graphql_fetch.write().unwrap() = Some(Utc::now());
         assert!(!adapter.cache_is_stale());
     }

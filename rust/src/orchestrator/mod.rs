@@ -339,6 +339,7 @@ pub fn build_snapshot(state: &OrchestratorState) -> OrchestratorSnapshot {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_agent_update_to_state(
     state: &mut OrchestratorState,
     issue_id: &str,
@@ -348,14 +349,38 @@ fn apply_agent_update_to_state(
     output_tokens: Option<u64>,
     total_tokens: Option<u64>,
     session_id: Option<String>,
+    workspace_root: &Path,
 ) {
     if let Some(entry) = state.running.get_mut(issue_id) {
         entry.last_event = Some(event.clone());
         entry.last_event_at = Some(Utc::now());
         entry.last_message = message;
 
-        if let Some(session_id) = session_id {
-            entry.session_id = Some(session_id);
+        if let Some(ref session_id) = session_id {
+            entry.session_id = Some(session_id.clone());
+        }
+
+        // Persist session ID to file store on session start
+        if event == "session_started" {
+            if let Some(ref sid) = session_id {
+                let store = crate::session::SessionStore::new(workspace_root);
+                if let Err(e) = store.save(crate::session::SessionRecord {
+                    issue_id: issue_id.to_string(),
+                    session_id: sid.clone(),
+                    created_at: Utc::now(),
+                    workspace_path: None,
+                }) {
+                    tracing::warn!(%issue_id, error = %e, "failed to persist session to file store");
+                }
+            }
+        }
+
+        // Clean up session record on completion or failure
+        if event == "completed" || event == "failed" {
+            let store = crate::session::SessionStore::new(workspace_root);
+            if let Err(e) = store.delete(issue_id) {
+                tracing::warn!(%issue_id, error = %e, "failed to delete session from file store");
+            }
         }
 
         // Increment turn count on turn completion events
@@ -682,6 +707,12 @@ pub async fn run_orchestrator(
                             let dispatch_issue = issue.clone();
                             let dispatch_updates = agent_update_tx.clone();
 
+                            // Look up any saved session ID from a previous run
+                            let session_store = crate::session::SessionStore::new(&workspace_root);
+                            let previous_session_id = session_store
+                                .load(&issue_id)
+                                .map(|r| r.session_id);
+
                             let abort_handle = workers.spawn(async move {
                                 let result = crate::agent::run_agent_attempt(
                                     dispatch_issue.clone(),
@@ -691,6 +722,7 @@ pub async fn run_orchestrator(
                                     dispatch_root,
                                     dispatch_executor,
                                     dispatch_updates,
+                                    previous_session_id,
                                 )
                                 .await;
 
@@ -739,6 +771,7 @@ pub async fn run_orchestrator(
                     update.output_tokens,
                     update.total_tokens,
                     update.session_id,
+                    &workspace_root,
                 );
             }
 
@@ -842,6 +875,7 @@ pub async fn run_orchestrator(
                             None,
                             None,
                             None,
+                            &workspace_root,
                         );
                     }
                     Some(OrchestratorMsg::WorkerExited { issue_id, success, error }) => {
@@ -920,7 +954,7 @@ mod tests {
 
         apply_agent_update_to_state(
             &mut state, "42", "turn_completed".into(),
-            Some("turn 1 completed".into()), None, None, None, None,
+            Some("turn 1 completed".into()), None, None, None, None, std::path::Path::new("."),
         );
 
         let entry = state.running.get("42").unwrap();
@@ -953,7 +987,7 @@ mod tests {
         });
 
         apply_agent_update_to_state(
-            &mut state, "42", "completed".into(), None, None, None, None, None,
+            &mut state, "42", "completed".into(), None, None, None, None, None, std::path::Path::new("."),
         );
 
         assert_eq!(state.running.get("42").unwrap().turn_count, 1);
@@ -985,7 +1019,7 @@ mod tests {
 
         apply_agent_update_to_state(
             &mut state, "42", "notification".into(),
-            Some("session update".into()), None, None, None, None,
+            Some("session update".into()), None, None, None, None, std::path::Path::new("."),
         );
 
         let entry = state.running.get("42").unwrap();
@@ -1019,7 +1053,7 @@ mod tests {
 
         apply_agent_update_to_state(
             &mut state, "42", "token_usage".into(),
-            None, Some(100), Some(200), Some(300), None,
+            None, Some(100), Some(200), Some(300), None, std::path::Path::new("."),
         );
 
         let entry = state.running.get("42").unwrap();
@@ -1055,7 +1089,7 @@ mod tests {
 
         apply_agent_update_to_state(
             &mut state, "42", "session_started".into(),
-            Some("session abc".into()), None, None, None, Some("abc-123".into()),
+            Some("session abc".into()), None, None, None, Some("abc-123".into()), std::path::Path::new("."),
         );
 
         assert_eq!(state.running.get("42").unwrap().session_id.as_deref(), Some("abc-123"));
@@ -1088,7 +1122,7 @@ mod tests {
         for i in 1..=5 {
             apply_agent_update_to_state(
                 &mut state, "42", "turn_completed".into(),
-                Some(format!("turn {i} completed")), None, None, None, None,
+                Some(format!("turn {i} completed")), None, None, None, None, std::path::Path::new("."),
             );
         }
 
@@ -1101,7 +1135,7 @@ mod tests {
         // Should not panic
         apply_agent_update_to_state(
             &mut state, "nonexistent", "turn_completed".into(),
-            None, None, None, None, None,
+            None, None, None, None, None, std::path::Path::new("."),
         );
     }
 }

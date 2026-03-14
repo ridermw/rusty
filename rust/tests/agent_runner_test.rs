@@ -123,6 +123,7 @@ async fn run_agent_attempt_with_valid_config_creates_workspace_and_returns_compl
         workspace_root.path().to_path_buf(),
         Arc::new(UnexpectedExecutor),
         update_tx,
+        None,
     )
     .await;
 
@@ -148,6 +149,7 @@ async fn run_agent_attempt_with_bad_workspace_root_returns_failed() {
         bad_root,
         Arc::new(UnexpectedExecutor),
         update_tx,
+        None,
     )
     .await;
 
@@ -189,6 +191,7 @@ async fn after_run_hook_is_called_even_when_prompt_rendering_fails() {
         workspace_root.path().to_path_buf(),
         shell_executor,
         update_tx,
+        None,
     )
     .await;
 
@@ -232,6 +235,7 @@ async fn agent_runner_fails_on_before_run_hook_error() {
         tmp.path().to_path_buf(),
         shell,
         tx,
+        None,
     )
     .await;
 
@@ -272,6 +276,7 @@ async fn agent_runner_attempts_to_launch_agent_process() {
         tmp.path().to_path_buf(),
         shell,
         tx,
+        None,
     )
     .await;
 

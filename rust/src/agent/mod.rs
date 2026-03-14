@@ -40,6 +40,7 @@ pub async fn run_agent_attempt(
     workspace_root: std::path::PathBuf,
     shell_executor: Arc<dyn ShellExecutor>,
     update_tx: mpsc::Sender<AgentUpdate>,
+    previous_session_id: Option<String>,
 ) -> WorkerResult {
     let span = info_span!(
         "agent_run",
@@ -202,19 +203,18 @@ pub async fn run_agent_attempt(
         }
         info!("ACP handshake completed");
 
-        let session_id = match client
-            .create_session(
-                &ws_path,
-                &config.agent.approval_policy,
-                None,
-                config.agent.read_timeout_ms,
-            )
-            .await
+        let session_id = match try_load_or_create_session(
+            &mut client,
+            &ws_path,
+            &config,
+            previous_session_id.as_deref(),
+        )
+        .await
         {
             Ok(session_id) => session_id,
             Err(e) => {
-                let error_message = format!("session create: {e}");
-                error!(error = %e, "failed to create ACP session");
+                let error_message = format!("session: {e}");
+                error!(error = %e, "failed to create/load ACP session");
                 let _ = client.stop().await;
                 run_after_run_hook(&shell_executor, &config.hooks, &ws_path);
                 emit_update(
@@ -478,4 +478,44 @@ async fn emit_log_token_usage(
             info!(log_dir = %log_dir.display(), "no token usage found in log files");
         }
     }
+}
+
+/// Try to load a previous session; fall back to creating a new one.
+///
+/// If `previous_session_id` is `Some`, sends `session/load` first.
+/// On load failure, logs a warning and creates a fresh session via `session/new`.
+async fn try_load_or_create_session(
+    client: &mut AcpClient,
+    cwd: &std::path::Path,
+    config: &RustyConfig,
+    previous_session_id: Option<&str>,
+) -> Result<String, AgentError> {
+    if let Some(prev_id) = previous_session_id {
+        info!(%prev_id, "attempting to resume previous ACP session");
+        match client
+            .load_session(prev_id, None, config.agent.read_timeout_ms)
+            .await
+        {
+            Ok(session_id) => {
+                info!(%session_id, "ACP session resumed successfully");
+                return Ok(session_id);
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    prev_id,
+                    "session/load failed, falling back to session/new"
+                );
+            }
+        }
+    }
+
+    client
+        .create_session(
+            cwd,
+            &config.agent.approval_policy,
+            None,
+            config.agent.read_timeout_ms,
+        )
+        .await
 }

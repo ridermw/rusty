@@ -22,6 +22,8 @@ pub enum AgentError {
     TurnFailed(String),
     #[error("turn requires user input")]
     TurnInputRequired,
+    #[error("session load failed: {0}")]
+    SessionLoadFailed(String),
     #[error("agent process exited with code {0}")]
     ProcessExit(i32),
     #[error("IO error: {0}")]
@@ -374,6 +376,49 @@ impl AcpClient {
 
         tracing::info!(%session_id, "ACP session created");
         Ok(session_id)
+    }
+
+    /// Resume an existing session by ID via the `session/load` RPC method.
+    ///
+    /// Returns the confirmed session ID on success.  If the server rejects
+    /// the load (session expired, not found, etc.), returns
+    /// `AgentError::SessionLoadFailed` so the caller can fall back to
+    /// `create_session`.
+    pub async fn load_session(
+        &mut self,
+        session_id: &str,
+        mcp_servers: Option<&serde_json::Value>,
+        read_timeout_ms: u64,
+    ) -> Result<String, AgentError> {
+        let params = serde_json::json!({
+            "sessionId": session_id,
+            "mcpServers": mcp_servers.unwrap_or(&serde_json::json!([])),
+        });
+
+        let id = self.send_request("session/load", Some(params)).await?;
+        let response = self.read_response(id, read_timeout_ms).await?;
+
+        if let Some(err) = &response.error {
+            return Err(AgentError::SessionLoadFailed(format!(
+                "session/load rejected: {err}"
+            )));
+        }
+
+        // Extract session ID from response (same shapes as session/new)
+        let loaded_id = response
+            .result
+            .as_ref()
+            .and_then(|r| {
+                r.get("sessionId")
+                    .and_then(Value::as_str)
+                    .or_else(|| r.get("session").and_then(|s| s.get("id")).and_then(Value::as_str))
+                    .or_else(|| r.get("id").and_then(Value::as_str))
+            })
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| session_id.to_owned());
+
+        tracing::info!(%loaded_id, "ACP session loaded");
+        Ok(loaded_id)
     }
 
     /// Send a message/turn to the session and stream responses.
