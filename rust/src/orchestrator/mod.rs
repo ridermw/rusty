@@ -87,7 +87,7 @@ pub fn is_eligible(issue: &Issue, state: &OrchestratorState, config: &RustyConfi
     let state_lower = issue.state.to_lowercase();
     let active: Vec<String> = config
         .tracker
-        .active_states
+        .effective_active_states()
         .iter()
         .map(|value| value.to_lowercase())
         .collect();
@@ -97,7 +97,7 @@ pub fn is_eligible(issue: &Issue, state: &OrchestratorState, config: &RustyConfi
 
     let terminal: Vec<String> = config
         .tracker
-        .terminal_states
+        .effective_terminal_states()
         .iter()
         .map(|value| value.to_lowercase())
         .collect();
