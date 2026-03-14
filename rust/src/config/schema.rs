@@ -24,13 +24,14 @@ pub struct TrackerConfig {
     pub owner: Option<String>,
     /// Repository name or "owner/repo" combined format.
     pub repo: Option<String>,
+    /// GitHub Project number (e.g., 5). When set, uses project status for state tracking.
+    pub project_number: Option<u32>,
     pub active_states: Vec<String>,
     pub terminal_states: Vec<String>,
     pub labels: Vec<String>,
-    /// Labels that map to active issue states (e.g., ["todo", "in_progress"]).
-    /// Used when `active_states` needs label-based matching.
+    /// Labels that map to active issue states (fallback when project not enabled).
     pub active_issue_labels: Vec<String>,
-    /// Labels that map to terminal issue states (e.g., ["done", "closed"]).
+    /// Labels that map to terminal issue states (fallback when project not enabled).
     pub terminal_issue_labels: Vec<String>,
     pub state_labels: HashMap<String, String>,
     pub assignee: Option<String>,
@@ -79,6 +80,7 @@ impl Default for TrackerConfig {
             api_key: None,
             owner: None,
             repo: None,
+            project_number: None,
             active_states: vec!["open".to_string()],
             terminal_states: vec!["closed".to_string()],
             labels: Vec::new(),
