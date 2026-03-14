@@ -154,6 +154,9 @@ pub struct AgentConfig {
     pub read_timeout_ms: u64,
     pub stall_timeout_ms: u64,
     pub approval_policy: String,
+    /// Directory for Copilot CLI log files. When set, `--log-dir` is passed
+    /// to the agent process and log files are parsed for token usage metrics.
+    pub log_dir: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -168,6 +171,7 @@ impl Default for AgentConfig {
             read_timeout_ms: 30_000,
             stall_timeout_ms: 300_000,
             approval_policy: "auto-approve".to_string(),
+            log_dir: None,
         }
     }
 }
