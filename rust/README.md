@@ -200,6 +200,96 @@ Web:    server/ (axum — optional, port-gated)
 
 See [`WORKFLOW.md`](WORKFLOW.md) for the full workflow configuration template.
 
+### Config Reference
+
+The YAML front matter in `WORKFLOW.md` (between `---` fences) configures Rusty.
+All sections and fields are optional and fall back to the defaults shown below.
+
+#### `tracker`
+
+Issue tracker connection. Only `github` is supported.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | _(none)_ | Tracker type. Must be `"github"`. |
+| `endpoint` | string | _(none)_ | GitHub API endpoint URL (for GHES). |
+| `api_key` | string | _(none)_ | Auth token. Resolved from `GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token` when omitted. |
+| `owner` | string | _(none)_ | Repository owner (e.g., `"ridermw"`). |
+| `repo` | string | _(none)_ | Repository name or `"owner/repo"` combined format. |
+| `active_states` | list | `["open"]` | Issue states considered active. |
+| `terminal_states` | list | `["closed"]` | Issue states considered terminal. |
+| `labels` | list | `[]` | General issue labels to filter by. |
+| `active_issue_labels` | list | `[]` | Labels that map to active states (e.g., `["todo", "in_progress"]`). Merged with `active_states`. |
+| `terminal_issue_labels` | list | `[]` | Labels that map to terminal states (e.g., `["done"]`). Merged with `terminal_states`. |
+| `state_labels` | map | `{}` | Custom state-to-label mappings. |
+| `assignee` | string | _(none)_ | Filter issues to a specific assignee. |
+
+#### `polling`
+
+How often to poll the tracker for changes.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `interval_ms` | integer | `30000` | Polling interval in milliseconds. |
+
+#### `workspace`
+
+Per-issue workspace directory settings.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `root` | string | `<TEMP_DIR>/rusty_workspaces` | Root directory for workspaces. Supports `~` (home) expansion. |
+
+#### `hooks`
+
+Shell commands executed at workspace lifecycle events.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `after_create` | string | _(none)_ | Command run after a workspace is created. |
+| `before_run` | string | _(none)_ | Command run before the agent starts. |
+| `after_run` | string | _(none)_ | Command run after the agent completes. |
+| `before_remove` | string | _(none)_ | Command run before a workspace is deleted. |
+| `timeout_ms` | integer | `60000` | Hook execution timeout in milliseconds. |
+
+#### `agent`
+
+Agent execution and concurrency settings.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `max_concurrent_agents` | integer | `10` | Maximum agent instances running globally. |
+| `max_turns` | integer | `20` | Maximum conversation turns per agent session. |
+| `max_retry_backoff_ms` | integer | `300000` | Maximum exponential backoff between retries (5 min). |
+| `max_concurrent_agents_by_state` | map | `{}` | Per-state concurrency limits (keys are lowercased). |
+| `command` | string | `"copilot --acp --yolo --no-ask-user"` | Full Copilot invocation command. |
+| `turn_timeout_ms` | integer | `3600000` | Single turn timeout (1 hour). |
+| `read_timeout_ms` | integer | `30000` | Read timeout for agent output. |
+| `stall_timeout_ms` | integer | `300000` | Agent stall detection timeout (5 min). |
+| `approval_policy` | string | `"auto-approve"` | Approval behavior (`"auto-approve"` or `"require-approval"`). |
+
+#### `copilot`
+
+Copilot CLI integration settings.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `command` | string | `"copilot"` | Base Copilot CLI command path. |
+| `chat_command` | string | _(none)_ | Custom chat subcommand (e.g., `"copilot chat"`). |
+| `approval_policy` | string | `"never"` | Approval policy (`"never"`, `"auto-approve"`, or `"require-approval"`). |
+| `thread_sandbox` | string | _(none)_ | Sandbox mode for threads (e.g., `"workspace_write"`). |
+| `turn_sandbox_policy` | YAML object | _(none)_ | Sandbox policy for individual turns (passed as raw YAML). |
+
+#### `github`
+
+GitHub CLI and repository defaults.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `cli_command` | string | `"gh"` | GitHub CLI command path. |
+| `default_branch` | string | `"main"` | Default branch for pull requests. |
+| `required_pr_label` | string | _(none)_ | Label required on all created pull requests. |
+
 ## License
 
 This project is licensed under the [Apache License 2.0](../LICENSE).
