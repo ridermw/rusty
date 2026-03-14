@@ -307,6 +307,13 @@ pub async fn run_agent_attempt(
             match turn_result {
                 Ok(crate::agent::TurnResult::Completed { turn_id }) => {
                     info!(%turn_id, turn = turn_number, "turn completed");
+                    emit_update(
+                        &update_tx,
+                        AgentUpdate::new(&issue_id, "turn_completed")
+                            .with_message(format!("turn {turn_number} completed"))
+                            .with_session(session_id.clone()),
+                    )
+                    .await;
                 }
                 Ok(crate::agent::TurnResult::Failed { turn_id, reason }) => {
                     let error_message = format!("turn failed: {reason}");
@@ -400,6 +407,11 @@ impl AgentUpdate {
 
     fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = Some(message.into());
+        self
+    }
+
+    fn with_session(mut self, session_id: String) -> Self {
+        self.session_id = Some(session_id);
         self
     }
 }
