@@ -2,11 +2,13 @@ use std::sync::RwLock;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use reqwest::StatusCode;
 use tracing::{info, warn};
 
 use super::client::GitHubClient;
 use crate::config::{resolve_github_token, schema::TrackerConfig};
+use crate::ports::{
+    HttpClient, ProcessRunner, ReqwestHttpClient, TokioProcessRunner,
+};
 use crate::tracker::{Issue, Tracker, TrackerError};
 
 const INITIAL_GRAPHQL_BACKOFF_SECS: u64 = 60;
@@ -16,8 +18,10 @@ const MAX_GRAPHQL_BACKOFF_SECS: u64 = 15 * 60;
 /// refresh at least this often regardless of the tier-1 result.
 const CACHE_TTL_SECS: i64 = 120;
 
-pub struct GitHubAdapter {
-    client: GitHubClient,
+pub struct GitHubAdapter<H: HttpClient = ReqwestHttpClient, P: ProcessRunner = TokioProcessRunner> {
+    client: GitHubClient<H>,
+    http: H,
+    process: P,
     config: TrackerConfig,
     /// Cached project items from the last successful GraphQL fetch.
     project_cache: RwLock<Option<Vec<Issue>>>,
@@ -99,8 +103,26 @@ impl BackoffState {
 
 impl GitHubAdapter {
     pub fn new(config: TrackerConfig) -> Self {
+        let http = ReqwestHttpClient::new();
         Self {
-            client: GitHubClient::new(),
+            client: GitHubClient::with_http(http.clone()),
+            http,
+            process: TokioProcessRunner,
+            config,
+            project_cache: RwLock::new(None),
+            change_etag: RwLock::new(None),
+            graphql_backoff: RwLock::new(BackoffState::new()),
+            last_graphql_fetch: RwLock::new(None),
+        }
+    }
+}
+
+impl<H: HttpClient + Clone, P: ProcessRunner> GitHubAdapter<H, P> {
+    pub fn with_deps(config: TrackerConfig, http: H, process: P) -> Self {
+        Self {
+            client: GitHubClient::with_http(http.clone()),
+            http,
+            process,
             config,
             project_cache: RwLock::new(None),
             change_etag: RwLock::new(None),
@@ -144,11 +166,9 @@ impl GitHubAdapter {
             .map(|items| Self::filter_project_items(items, requested_states))
     }
 
-    fn update_change_etag(&self, response: &reqwest::Response) {
-        if let Some(etag) = response.headers().get("etag") {
-            if let Ok(etag) = etag.to_str() {
-                *self.change_etag.write().unwrap() = Some(etag.to_string());
-            }
+    fn update_change_etag_from_response(&self, response: &crate::ports::HttpResponse) {
+        if let Some(etag) = response.header("etag") {
+            *self.change_etag.write().unwrap() = Some(etag.to_string());
         }
     }
 
@@ -182,44 +202,45 @@ impl GitHubAdapter {
             .await
             .map_err(|_| TrackerError::MissingApiKey)?;
         let url = Self::change_detection_url(&self.config)?;
+        let bearer = format!("Bearer {token}");
 
-        let mut request = reqwest::Client::new()
-            .get(&url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "rusty/0.1");
+        let mut headers = vec![
+            ("Authorization", bearer.as_str()),
+            ("Accept", "application/vnd.github+json"),
+            ("User-Agent", "rusty/0.1"),
+        ];
 
-        if let Some(etag) = self.change_etag.read().unwrap().clone() {
-            request = request.header("If-None-Match", etag);
+        let etag_value = self.change_etag.read().unwrap().clone();
+        if let Some(ref etag) = etag_value {
+            headers.push(("If-None-Match", etag.as_str()));
         }
 
-        let response = request
-            .send()
+        let response = self
+            .http
+            .get(&url, &headers)
             .await
             .map_err(|err| TrackerError::ApiRequest(err.to_string()))?;
 
-        match response.status() {
-            StatusCode::NOT_MODIFIED => {
-                self.update_change_etag(&response);
+        match response.status {
+            304 => {
+                self.update_change_etag_from_response(&response);
                 Ok(ChangeCheck::Unchanged)
             }
-            StatusCode::OK => {
-                self.update_change_etag(&response);
+            200 => {
+                self.update_change_etag_from_response(&response);
                 Ok(ChangeCheck::Changed)
             }
-            StatusCode::TOO_MANY_REQUESTS => {
+            429 => {
                 let reset_at = response
-                    .headers()
-                    .get("x-ratelimit-reset")
-                    .and_then(|value| value.to_str().ok())
+                    .header("x-ratelimit-reset")
                     .and_then(|value| value.parse::<i64>().ok())
                     .and_then(|timestamp| DateTime::<Utc>::from_timestamp(timestamp, 0))
                     .unwrap_or_else(Utc::now);
                 Err(TrackerError::RateLimited { reset_at })
             }
             status => {
-                let body = response.text().await.unwrap_or_default();
-                Err(TrackerError::ApiStatus(status.as_u16(), body))
+                let body = response.text();
+                Err(TrackerError::ApiStatus(status, body))
             }
         }
     }
@@ -335,24 +356,28 @@ impl GitHubAdapter {
             .as_deref()
             .ok_or(TrackerError::MissingRepo)?;
         let project_number = self.config.project_number.unwrap_or(0);
+        let number_str = project_number.to_string();
 
-        let output = tokio::process::Command::new("gh")
-            .args([
-                "project",
-                "item-list",
-                &project_number.to_string(),
-                "--owner",
-                owner,
-                "--format",
-                "json",
-                "--limit",
-                "100",
-            ])
-            .output()
+        let output = self
+            .process
+            .run(
+                "gh",
+                &[
+                    "project",
+                    "item-list",
+                    &number_str,
+                    "--owner",
+                    owner,
+                    "--format",
+                    "json",
+                    "--limit",
+                    "100",
+                ],
+            )
             .await
             .map_err(|e| TrackerError::ApiRequest(format!("gh project item-list failed: {e}")))?;
 
-        if !output.status.success() {
+        if !output.status_success {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if Self::is_graphql_rate_limited(&stderr) {
                 return Err(TrackerError::RateLimited {
@@ -360,9 +385,12 @@ impl GitHubAdapter {
                 });
             }
 
+            let status_display = output
+                .status_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
             return Err(TrackerError::ApiRequest(format!(
-                "gh project item-list returned {}: {stderr}",
-                output.status
+                "gh project item-list returned {status_display}: {stderr}",
             )));
         }
 
@@ -494,7 +522,7 @@ impl GitHubAdapter {
 }
 
 #[async_trait]
-impl Tracker for GitHubAdapter {
+impl<H: HttpClient + Clone, P: ProcessRunner> Tracker for GitHubAdapter<H, P> {
     async fn fetch_candidate_issues(
         &self,
         config: &TrackerConfig,
@@ -656,7 +684,7 @@ mod tests {
             ..tracker_config()
         };
 
-        let url = GitHubAdapter::change_detection_url(&config).unwrap();
+        let url = <GitHubAdapter>::change_detection_url(&config).unwrap();
 
         assert_eq!(
             url,

@@ -4,6 +4,7 @@ pub mod config;
 pub mod dashboard;
 pub mod logging;
 pub mod orchestrator;
+pub mod ports;
 pub mod prompt;
 pub mod server;
 pub mod tracker;
