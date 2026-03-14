@@ -7,5 +7,6 @@ pub mod orchestrator;
 pub mod prompt;
 pub mod server;
 pub mod tracker;
+pub mod tui;
 pub mod workflow;
 pub mod workspace;
