@@ -400,6 +400,48 @@ fn effective_terminal_states_merge_labels_without_duplicates() {
 }
 
 #[test]
+fn full_repo_returns_none_with_owner_only() {
+    use rusty::config::schema::TrackerConfig;
+    let mut config = TrackerConfig::default();
+    config.owner = Some("ridermw".to_string());
+    assert_eq!(config.full_repo(), None);
+}
+
+#[test]
+fn effective_active_states_returns_defaults_when_labels_empty() {
+    let config = rusty::config::schema::TrackerConfig::default();
+    assert_eq!(config.effective_active_states(), vec!["open".to_string()]);
+}
+
+#[test]
+fn effective_terminal_states_returns_defaults_when_labels_empty() {
+    let config = rusty::config::schema::TrackerConfig::default();
+    assert_eq!(
+        config.effective_terminal_states(),
+        vec!["closed".to_string()]
+    );
+}
+
+#[test]
+fn tracker_config_default_field_values() {
+    use rusty::config::schema::TrackerConfig;
+    let config = TrackerConfig::default();
+    assert_eq!(config.kind, None);
+    assert_eq!(config.endpoint, None);
+    assert_eq!(config.api_key, None);
+    assert_eq!(config.owner, None);
+    assert_eq!(config.repo, None);
+    assert_eq!(config.project_number, None);
+    assert_eq!(config.active_states, vec!["open".to_string()]);
+    assert_eq!(config.terminal_states, vec!["closed".to_string()]);
+    assert!(config.labels.is_empty());
+    assert!(config.active_issue_labels.is_empty());
+    assert!(config.terminal_issue_labels.is_empty());
+    assert!(config.state_labels.is_empty());
+    assert_eq!(config.assignee, None);
+}
+
+#[test]
 fn agent_launch_command_returns_agent_command_directly() {
     let config = RustyConfig::default();
     assert_eq!(

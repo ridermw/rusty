@@ -100,6 +100,22 @@ fn parse_workflow_preserves_unknown_top_level_keys() {
     assert_eq!(definition.config, expected_config);
 }
 
+#[test]
+fn parse_workflow_rejects_unclosed_front_matter() {
+    let error = parse_workflow("---\ntracker:\n  kind: github\nprompt text\n")
+        .expect_err("unclosed front matter should fail");
+
+    assert!(matches!(error, ConfigError::WorkflowParseError(msg) if msg.contains("no closing ---")));
+}
+
+#[test]
+fn parse_workflow_handles_empty_front_matter_section() {
+    let definition = parse_workflow("---\n---\nHello prompt\n").expect("empty front matter should parse");
+
+    assert_eq!(definition.config, empty_mapping());
+    assert_eq!(definition.prompt_template, "Hello prompt");
+}
+
 #[tokio::test]
 async fn workflow_store_reloads_valid_changes() {
     let temp_dir = tempdir().expect("temp dir should be created");
