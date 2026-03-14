@@ -1,6 +1,6 @@
 //! CLI entry point for Rusty (Rusty orchestration daemon).
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::{error, info};
 
@@ -16,7 +16,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
                   Quick start:\n  \
                     rusty setup              # Interactive first-time setup\n  \
                     rusty run --yolo         # Start the daemon\n  \
-                    rusty run --yolo --port 4000  # Start with web dashboard\n\n\
+                    rusty run --yolo --port 4000  # Start with web dashboard\n  \
+                    rusty dashboard --url http://127.0.0.1:4000  # Open terminal dashboard\n\n\
                   Docs: https://github.com/ridermw/rusty/blob/main/rust/README.md",
     after_help = "Environment variables:\n  \
                   GITHUB_TOKEN/GH_TOKEN  GitHub API token (or use gh auth login)\n  \
@@ -25,6 +26,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
                   rusty run --yolo\n  \
                   rusty run --yolo --port 4000 --logs-root ./logs\n  \
                   rusty run --yolo path/to/WORKFLOW.md\n  \
+                  rusty dashboard --url http://127.0.0.1:4000\n  \
                   rusty setup"
 )]
 pub struct Cli {
@@ -36,8 +38,21 @@ pub struct Cli {
 pub enum Commands {
     /// Start the orchestration daemon
     Run(RunArgs),
+    /// Watch orchestrator status in a terminal dashboard
+    Dashboard(DashboardArgs),
     /// Interactive first-time setup
     Setup,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct DashboardArgs {
+    /// Dashboard API URL (default: http://127.0.0.1:8080)
+    #[arg(long, default_value = "http://127.0.0.1:8080")]
+    pub url: String,
+
+    /// Refresh interval in seconds
+    #[arg(long, default_value = "2")]
+    pub refresh: u64,
 }
 
 #[derive(Parser, Debug)]
@@ -154,6 +169,7 @@ pub async fn run() -> anyhow::Result<()> {
     match cli.command {
         Commands::Setup => run_setup().await,
         Commands::Run(args) => run_daemon(args).await,
+        Commands::Dashboard(args) => crate::tui::run_dashboard(args).await,
     }
 }
 
