@@ -187,86 +187,8 @@ impl Tracker for GitHubAdapter {
     }
 
     async fn fetch_issue_states_by_ids(&self, ids: &[String]) -> Result<Vec<Issue>, TrackerError> {
-        if self.project_enabled() {
-            // For reconciliation, get project status for these specific issues
-            let _all_states = self
-                .fetch_project_items(&[]) // fetch all statuses
-                .await
-                .unwrap_or_default();
-
-            // Filter all project items, not just active ones
-            let owner = self.config.owner.as_deref().unwrap_or("");
-            let project_number = self.config.project_number.unwrap_or(0);
-
-            // Re-fetch without state filter for reconciliation
-            let output = tokio::process::Command::new("gh")
-                .args([
-                    "project",
-                    "item-list",
-                    &project_number.to_string(),
-                    "--owner",
-                    owner,
-                    "--format",
-                    "json",
-                    "--limit",
-                    "100",
-                ])
-                .output()
-                .await
-                .map_err(|e| TrackerError::ApiRequest(format!("gh project failed: {e}")))?;
-
-            if !output.status.success() {
-                return Err(TrackerError::ApiRequest(
-                    "gh project item-list failed".into(),
-                ));
-            }
-
-            let json: serde_json::Value = serde_json::from_slice(&output.stdout)
-                .map_err(|e| TrackerError::UnknownPayload(e.to_string()))?;
-
-            let repo_name = self.config.repo.as_deref().unwrap_or("repo");
-            let items = json.get("items").and_then(|i| i.as_array());
-
-            let mut results = Vec::new();
-            for id in ids {
-                if let Some(items) = items {
-                    if let Some(item) = items.iter().find(|i| {
-                        i.get("content")
-                            .and_then(|c| c.get("number"))
-                            .and_then(|n| n.as_u64())
-                            .map(|n| n.to_string())
-                            == Some(id.clone())
-                    }) {
-                        let status = item
-                            .get("status")
-                            .and_then(|s| s.as_str())
-                            .unwrap_or("open");
-                        let number: u64 = id.parse().unwrap_or(0);
-                        results.push(Issue {
-                            id: id.clone(),
-                            identifier: format!("{repo_name}-{number}"),
-                            title: item
-                                .get("title")
-                                .and_then(|t| t.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            description: None,
-                            priority: None,
-                            state: status.to_string(),
-                            branch_name: None,
-                            url: None,
-                            labels: vec![],
-                            blocked_by: vec![],
-                            created_at: None,
-                            updated_at: None,
-                        });
-                    }
-                }
-            }
-            return Ok(results);
-        }
-
-        // Fallback: REST API
+        // Always use REST API for reconciliation — cheaper and supports ETags.
+        // Project API is too expensive for per-tick state checks.
         let numbers: Vec<u64> = ids.iter().filter_map(|id| id.parse::<u64>().ok()).collect();
         self.client
             .fetch_issues_by_numbers(&self.config, &numbers)
