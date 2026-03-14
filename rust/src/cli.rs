@@ -86,7 +86,12 @@ pub fn resolve_workspace_root(config: &crate::config::schema::RustyConfig) -> Pa
         .workspace
         .root
         .as_deref()
-        .map(crate::config::expand_home)
+        .map(|root| {
+            // Resolve $VAR env references first, then expand ~
+            let resolved =
+                crate::config::resolve_env_value(root).unwrap_or_else(|_| root.to_string());
+            crate::config::expand_home(&resolved)
+        })
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("rusty_workspaces"))
 }
