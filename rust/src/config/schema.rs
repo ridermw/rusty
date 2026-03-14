@@ -35,6 +35,8 @@ pub struct TrackerConfig {
     pub terminal_issue_labels: Vec<String>,
     pub state_labels: HashMap<String, String>,
     pub assignee: Option<String>,
+    /// URL to the project board (e.g., GitHub Projects link) shown in the dashboard header.
+    pub project_url: Option<String>,
 }
 
 impl TrackerConfig {
@@ -88,6 +90,7 @@ impl Default for TrackerConfig {
             terminal_issue_labels: Vec::new(),
             state_labels: HashMap::new(),
             assignee: None,
+            project_url: None,
         }
     }
 }

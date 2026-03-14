@@ -228,11 +228,16 @@ async fn build_snapshot_returns_correct_counts() {
 
     assert_eq!(snapshot.running_count, 1);
     assert_eq!(snapshot.retrying_count, 1);
+    assert_eq!(snapshot.max_agents, 2);
+    assert!((snapshot.throughput_tps - 12.0).abs() < 0.1); // 150 tokens / 12.5 seconds
     assert_eq!(snapshot.running.len(), 1);
     assert_eq!(snapshot.retrying.len(), 1);
     assert_eq!(snapshot.agent_totals.input_tokens, 100);
     assert_eq!(snapshot.agent_totals.output_tokens, 50);
     assert_eq!(snapshot.agent_totals.total_tokens, 150);
+    assert!(snapshot.rate_limits.is_none());
+    assert!(snapshot.project_url.is_none());
+    assert!(snapshot.next_tick_at.is_none());
 
     let running = snapshot
         .running

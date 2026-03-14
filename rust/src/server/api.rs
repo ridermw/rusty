@@ -34,10 +34,14 @@ async fn get_state(AxumState(state): AxumState<AppState>) -> impl IntoResponse {
                 "running": snapshot.running_count,
                 "retrying": snapshot.retrying_count
             },
+            "max_agents": snapshot.max_agents,
+            "throughput_tps": snapshot.throughput_tps,
             "running": snapshot.running,
             "retrying": snapshot.retrying,
             "codex_totals": snapshot.agent_totals,
-            "rate_limits": null
+            "rate_limits": snapshot.rate_limits,
+            "project_url": snapshot.project_url,
+            "next_tick_at": snapshot.next_tick_at
         }))
         .into_response(),
         None => (

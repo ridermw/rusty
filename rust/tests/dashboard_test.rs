@@ -6,9 +6,14 @@ fn empty_snapshot() -> OrchestratorSnapshot {
     OrchestratorSnapshot {
         running_count: 0,
         retrying_count: 0,
+        max_agents: 10,
+        throughput_tps: 0.0,
         running: vec![],
         retrying: vec![],
         agent_totals: TokenTotals::default(),
+        rate_limits: None,
+        project_url: None,
+        next_tick_at: None,
     }
 }
 
@@ -24,6 +29,8 @@ fn render_dashboard_with_running_and_retry_sections_shows_both_sections() {
     let snapshot = OrchestratorSnapshot {
         running_count: 1,
         retrying_count: 1,
+        max_agents: 10,
+        throughput_tps: 2.4,
         running: vec![RunningSnapshot {
             issue_id: "1".into(),
             identifier: "ISSUE-1".into(),
@@ -50,6 +57,9 @@ fn render_dashboard_with_running_and_retry_sections_shows_both_sections() {
             total_tokens: 30,
             seconds_running: 12.5,
         },
+        rate_limits: None,
+        project_url: None,
+        next_tick_at: None,
     };
 
     let output = render_dashboard(&snapshot);
@@ -65,6 +75,8 @@ fn render_dashboard_shows_correct_token_totals() {
     let snapshot = OrchestratorSnapshot {
         running_count: 0,
         retrying_count: 0,
+        max_agents: 10,
+        throughput_tps: 4.42,
         running: vec![],
         retrying: vec![],
         agent_totals: TokenTotals {
@@ -73,11 +85,14 @@ fn render_dashboard_shows_correct_token_totals() {
             total_tokens: 42,
             seconds_running: 9.5,
         },
+        rate_limits: None,
+        project_url: None,
+        next_tick_at: None,
     };
 
     let output = render_dashboard(&snapshot);
 
-    assert!(output.contains("Tokens: 42 (in:16 out:26)"));
+    assert!(output.contains("Tokens: in 16 | out 26 | total 42"));
     assert!(output.contains("Runtime: 9.5s"));
 }
 
@@ -121,6 +136,8 @@ fn render_dashboard_with_multiple_running_sessions() {
     let snapshot = OrchestratorSnapshot {
         running_count: 3,
         retrying_count: 0,
+        max_agents: 10,
+        throughput_tps: 1.73,
         running: vec![
             RunningSnapshot {
                 issue_id: "1".into(),
@@ -169,11 +186,14 @@ fn render_dashboard_with_multiple_running_sessions() {
             total_tokens: 52,
             seconds_running: 30.0,
         },
+        rate_limits: None,
+        project_url: None,
+        next_tick_at: None,
     };
 
     let output = render_dashboard(&snapshot);
 
-    assert!(output.contains("Running: 3"));
+    assert!(output.contains("Agents: 3/10"));
     assert!(output.contains("ISSUE-1"));
     assert!(output.contains("ISSUE-2"));
     assert!(output.contains("ISSUE-3"));
@@ -184,6 +204,8 @@ fn render_dashboard_retry_entry_with_no_error() {
     let snapshot = OrchestratorSnapshot {
         running_count: 0,
         retrying_count: 1,
+        max_agents: 10,
+        throughput_tps: 0.0,
         running: vec![],
         retrying: vec![RetrySnapshot {
             issue_id: "1".into(),
@@ -193,6 +215,9 @@ fn render_dashboard_retry_entry_with_no_error() {
             error: None,
         }],
         agent_totals: TokenTotals::default(),
+        rate_limits: None,
+        project_url: None,
+        next_tick_at: None,
     };
 
     let output = render_dashboard(&snapshot);
@@ -208,6 +233,8 @@ fn render_dashboard_running_entry_with_no_optional_fields() {
     let snapshot = OrchestratorSnapshot {
         running_count: 1,
         retrying_count: 0,
+        max_agents: 10,
+        throughput_tps: 0.0,
         running: vec![RunningSnapshot {
             issue_id: "1".into(),
             identifier: "ISSUE-4".into(),
@@ -223,6 +250,9 @@ fn render_dashboard_running_entry_with_no_optional_fields() {
         }],
         retrying: vec![],
         agent_totals: TokenTotals::default(),
+        rate_limits: None,
+        project_url: None,
+        next_tick_at: None,
     };
 
     let output = render_dashboard(&snapshot);
@@ -238,6 +268,8 @@ fn render_dashboard_truncates_long_messages_at_sixty_chars() {
     let snapshot = OrchestratorSnapshot {
         running_count: 1,
         retrying_count: 0,
+        max_agents: 10,
+        throughput_tps: 3.0,
         running: vec![RunningSnapshot {
             issue_id: "1".into(),
             identifier: "ISSUE-3".into(),
@@ -258,10 +290,113 @@ fn render_dashboard_truncates_long_messages_at_sixty_chars() {
             total_tokens: 3,
             seconds_running: 1.0,
         },
+        rate_limits: None,
+        project_url: None,
+        next_tick_at: None,
     };
 
     let output = render_dashboard(&snapshot);
 
     assert!(output.contains(&"a".repeat(60)));
     assert!(!output.contains(&long_message));
+}
+
+#[test]
+fn render_dashboard_shows_agents_ratio() {
+    let snapshot = OrchestratorSnapshot {
+        running_count: 3,
+        retrying_count: 0,
+        max_agents: 50,
+        throughput_tps: 100.0,
+        running: vec![],
+        retrying: vec![],
+        agent_totals: TokenTotals::default(),
+        rate_limits: None,
+        project_url: None,
+        next_tick_at: None,
+    };
+
+    let output = render_dashboard(&snapshot);
+    assert!(output.contains("Agents: 3/50"));
+}
+
+#[test]
+fn render_dashboard_shows_throughput() {
+    let snapshot = OrchestratorSnapshot {
+        running_count: 0,
+        retrying_count: 0,
+        max_agents: 10,
+        throughput_tps: 658.0,
+        running: vec![],
+        retrying: vec![],
+        agent_totals: TokenTotals {
+            input_tokens: 6580,
+            output_tokens: 0,
+            total_tokens: 6580,
+            seconds_running: 10.0,
+        },
+        rate_limits: None,
+        project_url: None,
+        next_tick_at: None,
+    };
+
+    let output = render_dashboard(&snapshot);
+    assert!(output.contains("Throughput: 658 tps"));
+}
+
+#[test]
+fn render_dashboard_shows_project_url_when_set() {
+    let snapshot = OrchestratorSnapshot {
+        running_count: 0,
+        retrying_count: 0,
+        max_agents: 10,
+        throughput_tps: 0.0,
+        running: vec![],
+        retrying: vec![],
+        agent_totals: TokenTotals::default(),
+        rate_limits: None,
+        project_url: Some("https://github.com/orgs/test/projects/1".into()),
+        next_tick_at: None,
+    };
+
+    let output = render_dashboard(&snapshot);
+    assert!(output.contains("Project: https://github.com/orgs/test/projects/1"));
+}
+
+#[test]
+fn render_dashboard_shows_rate_limits_na_when_none() {
+    let snapshot = OrchestratorSnapshot {
+        running_count: 0,
+        retrying_count: 0,
+        max_agents: 10,
+        throughput_tps: 0.0,
+        running: vec![],
+        retrying: vec![],
+        agent_totals: TokenTotals::default(),
+        rate_limits: None,
+        project_url: None,
+        next_tick_at: None,
+    };
+
+    let output = render_dashboard(&snapshot);
+    assert!(output.contains("Rate Limits: n/a"));
+}
+
+#[test]
+fn render_dashboard_shows_next_refresh_when_set() {
+    let snapshot = OrchestratorSnapshot {
+        running_count: 0,
+        retrying_count: 0,
+        max_agents: 10,
+        throughput_tps: 0.0,
+        running: vec![],
+        retrying: vec![],
+        agent_totals: TokenTotals::default(),
+        rate_limits: None,
+        project_url: None,
+        next_tick_at: Some("2026-03-14T10:01:50Z".into()),
+    };
+
+    let output = render_dashboard(&snapshot);
+    assert!(output.contains("Next refresh: 2026-03-14T10:01:50Z"));
 }

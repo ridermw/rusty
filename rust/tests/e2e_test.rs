@@ -235,6 +235,8 @@ fn dashboard_renders_snapshot() {
     let snapshot = OrchestratorSnapshot {
         running_count: 1,
         retrying_count: 0,
+        max_agents: 10,
+        throughput_tps: 0.0,
         running: vec![RunningSnapshot {
             issue_id: "1".into(),
             identifier: "repo-1".into(),
@@ -250,10 +252,13 @@ fn dashboard_renders_snapshot() {
         }],
         retrying: vec![],
         agent_totals: TokenTotals::default(),
+        rate_limits: None,
+        project_url: None,
+        next_tick_at: None,
     };
 
     let output = dashboard::render_dashboard(&snapshot);
-    assert!(output.contains("Running: 1"));
+    assert!(output.contains("Agents: 1/10"));
     assert!(output.contains("repo-1"));
     assert!(output.contains("700"));
 }

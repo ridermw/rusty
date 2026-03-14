@@ -45,9 +45,14 @@ pub enum OrchestratorMsg {
 pub struct OrchestratorSnapshot {
     pub running_count: usize,
     pub retrying_count: usize,
+    pub max_agents: usize,
+    pub throughput_tps: f64,
     pub running: Vec<RunningSnapshot>,
     pub retrying: Vec<RetrySnapshot>,
     pub agent_totals: TokenTotals,
+    pub rate_limits: Option<serde_json::Value>,
+    pub project_url: Option<String>,
+    pub next_tick_at: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -309,6 +314,15 @@ pub fn next_attempt(current: Option<u32>, is_normal_exit: bool) -> u32 {
 
 /// Build a snapshot from current state.
 pub fn build_snapshot(state: &OrchestratorState) -> OrchestratorSnapshot {
+    build_snapshot_with_config(state, None, None)
+}
+
+/// Build a snapshot with optional config-derived fields and next-tick timestamp.
+pub fn build_snapshot_with_config(
+    state: &OrchestratorState,
+    project_url: Option<String>,
+    next_tick_at: Option<String>,
+) -> OrchestratorSnapshot {
     let running: Vec<RunningSnapshot> = state
         .running
         .values()
@@ -339,12 +353,24 @@ pub fn build_snapshot(state: &OrchestratorState) -> OrchestratorSnapshot {
         })
         .collect();
 
+    let seconds = state.agent_totals.seconds_running;
+    let throughput_tps = if seconds > 0.0 {
+        state.agent_totals.total_tokens as f64 / seconds
+    } else {
+        0.0
+    };
+
     OrchestratorSnapshot {
         running_count: running.len(),
         retrying_count: retrying.len(),
+        max_agents: state.max_concurrent_agents,
+        throughput_tps,
         running,
         retrying,
         agent_totals: state.agent_totals.clone(),
+        rate_limits: state.agent_rate_limits.clone(),
+        project_url,
+        next_tick_at,
     }
 }
 
@@ -891,7 +917,15 @@ pub async fn run_orchestrator(
             msg = msg_rx.recv() => {
                 match msg {
                     Some(OrchestratorMsg::SnapshotRequest { reply }) => {
-                        let _ = reply.send(build_snapshot(&state));
+                        let next_tick = tick_interval.period();
+                        let next_tick_at = (chrono::Utc::now()
+                            + chrono::Duration::from_std(next_tick).unwrap_or_default())
+                        .to_rfc3339();
+                        let _ = reply.send(build_snapshot_with_config(
+                            &state,
+                            config.tracker.project_url.clone(),
+                            Some(next_tick_at),
+                        ));
                     }
                     Some(OrchestratorMsg::RefreshRequest { reply }) => {
                         let _ = reply.send(());
