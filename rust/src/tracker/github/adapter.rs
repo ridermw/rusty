@@ -595,6 +595,8 @@ impl<H: HttpClient + Clone, P: ProcessRunner> Tracker for GitHubAdapter<H, P> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tracker::memory::test_issue;
+    use serde_json::json;
 
     fn tracker_config() -> TrackerConfig {
         TrackerConfig {
@@ -690,5 +692,277 @@ mod tests {
             url,
             "https://api.github.com/repos/octo-org/rusty/issues?state=open&per_page=1&sort=updated&direction=desc"
         );
+    }
+
+    // ── parse_project_items tests ──────────────────────────────────────
+
+    #[test]
+    fn parse_project_items_extracts_valid_issues() {
+        let json = json!({
+            "items": [
+                {
+                    "status": "Todo",
+                    "labels": ["bug"],
+                    "content": {
+                        "type": "Issue",
+                        "number": 42,
+                        "title": "Fix login",
+                        "body": "Details here",
+                        "url": "https://github.com/octo-org/rusty/issues/42"
+                    }
+                },
+                {
+                    "status": "In Progress",
+                    "labels": ["feature"],
+                    "content": {
+                        "type": "Issue",
+                        "number": 99,
+                        "title": "Add search",
+                        "body": "Search feature",
+                        "url": "https://github.com/octo-org/rusty/issues/99"
+                    }
+                }
+            ]
+        });
+
+        let config = tracker_config();
+        let issues = GitHubAdapter::parse_project_items(&json, &config).unwrap();
+
+        assert_eq!(issues.len(), 2);
+
+        assert_eq!(issues[0].id, "42");
+        assert_eq!(issues[0].identifier, "rusty-42");
+        assert_eq!(issues[0].title, "Fix login");
+        assert_eq!(issues[0].description.as_deref(), Some("Details here"));
+        assert_eq!(issues[0].state, "Todo");
+        assert_eq!(
+            issues[0].url.as_deref(),
+            Some("https://github.com/octo-org/rusty/issues/42")
+        );
+        assert_eq!(issues[0].labels, vec!["bug"]);
+
+        assert_eq!(issues[1].id, "99");
+        assert_eq!(issues[1].identifier, "rusty-99");
+        assert_eq!(issues[1].title, "Add search");
+        assert_eq!(issues[1].state, "In Progress");
+    }
+
+    #[test]
+    fn parse_project_items_skips_non_issue_types() {
+        let json = json!({
+            "items": [
+                {
+                    "status": "Todo",
+                    "labels": [],
+                    "content": {
+                        "type": "PullRequest",
+                        "number": 10,
+                        "title": "PR title",
+                        "body": "",
+                        "url": "https://github.com/octo-org/rusty/pull/10"
+                    }
+                },
+                {
+                    "status": "Draft",
+                    "labels": [],
+                    "content": {
+                        "type": "DraftIssue",
+                        "number": 11,
+                        "title": "Draft title",
+                        "body": "",
+                        "url": ""
+                    }
+                },
+                {
+                    "status": "Todo",
+                    "labels": [],
+                    "content": {
+                        "type": "Issue",
+                        "number": 1,
+                        "title": "Real issue",
+                        "body": "",
+                        "url": "https://github.com/octo-org/rusty/issues/1"
+                    }
+                }
+            ]
+        });
+
+        let config = tracker_config();
+        let issues = GitHubAdapter::parse_project_items(&json, &config).unwrap();
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].title, "Real issue");
+    }
+
+    #[test]
+    fn parse_project_items_skips_items_with_zero_number() {
+        let json = json!({
+            "items": [
+                {
+                    "status": "Todo",
+                    "labels": [],
+                    "content": {
+                        "type": "Issue",
+                        "number": 0,
+                        "title": "Bad issue",
+                        "body": "",
+                        "url": ""
+                    }
+                }
+            ]
+        });
+
+        let config = tracker_config();
+        let issues = GitHubAdapter::parse_project_items(&json, &config).unwrap();
+
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn parse_project_items_extracts_priority_from_labels() {
+        let json = json!({
+            "items": [
+                {
+                    "status": "Todo",
+                    "labels": ["bug", "priority-2"],
+                    "content": {
+                        "type": "Issue",
+                        "number": 42,
+                        "title": "Fix login",
+                        "body": "Details here",
+                        "url": "https://github.com/octo-org/rusty/issues/42"
+                    }
+                }
+            ]
+        });
+
+        let config = tracker_config();
+        let issues = GitHubAdapter::parse_project_items(&json, &config).unwrap();
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].priority, Some(2));
+    }
+
+    #[test]
+    fn parse_project_items_returns_error_on_missing_items_array() {
+        let json = json!({});
+
+        let config = tracker_config();
+        let result = GitHubAdapter::parse_project_items(&json, &config);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, TrackerError::UnknownPayload(_)),
+            "expected UnknownPayload, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_project_items_handles_empty_items_array() {
+        let json = json!({"items": []});
+
+        let config = tracker_config();
+        let issues = GitHubAdapter::parse_project_items(&json, &config).unwrap();
+
+        assert!(issues.is_empty());
+    }
+
+    // ── filter_project_items tests ─────────────────────────────────────
+
+    #[test]
+    fn filter_project_items_returns_all_when_states_empty() {
+        let items = vec![
+            test_issue("1", "rusty-1", "A", "Todo", None),
+            test_issue("2", "rusty-2", "B", "Done", None),
+        ];
+
+        let result = GitHubAdapter::filter_project_items(&items, &[]);
+
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn filter_project_items_filters_by_requested_states() {
+        let items = vec![
+            test_issue("1", "rusty-1", "A", "Todo", None),
+            test_issue("2", "rusty-2", "B", "In Progress", None),
+            test_issue("3", "rusty-3", "C", "Done", None),
+        ];
+
+        // Case-insensitive: "todo" should match "Todo"
+        let states = vec!["todo".to_string(), "done".to_string()];
+        let result = GitHubAdapter::filter_project_items(&items, &states);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, "1");
+        assert_eq!(result[1].id, "3");
+    }
+
+    // ── is_graphql_rate_limited tests ──────────────────────────────────
+
+    #[test]
+    fn is_graphql_rate_limited_detects_rate_limit() {
+        assert!(GitHubAdapter::is_graphql_rate_limited(
+            "API rate limit exceeded for user"
+        ));
+    }
+
+    #[test]
+    fn is_graphql_rate_limited_detects_secondary_rate_limit() {
+        assert!(GitHubAdapter::is_graphql_rate_limited(
+            "You have exceeded a secondary rate limit"
+        ));
+    }
+
+    #[test]
+    fn is_graphql_rate_limited_returns_false_for_other_errors() {
+        assert!(!GitHubAdapter::is_graphql_rate_limited("permission denied"));
+    }
+
+    // ── extract_rate_limit_reset tests ─────────────────────────────────
+
+    #[test]
+    fn extract_rate_limit_reset_parses_unix_timestamp() {
+        let stderr = "some header\nx-ratelimit-reset: 1700000000\nother stuff";
+        let result = GitHubAdapter::extract_rate_limit_reset(stderr);
+
+        assert!(result.is_some());
+        let dt = result.unwrap();
+        assert_eq!(dt, DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap());
+    }
+
+    #[test]
+    fn extract_rate_limit_reset_returns_none_on_garbage() {
+        assert!(GitHubAdapter::extract_rate_limit_reset("random garbage text").is_none());
+    }
+
+    // ── change_detection_url tests ─────────────────────────────────────
+
+    #[test]
+    fn change_detection_url_returns_error_when_repo_missing() {
+        let config = TrackerConfig::default(); // no owner/repo
+        let result = GitHubAdapter::change_detection_url(&config);
+
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), TrackerError::MissingRepo),
+            "expected MissingRepo error"
+        );
+    }
+
+    // ── cache_is_stale tests ───────────────────────────────────────────
+
+    #[test]
+    fn cache_is_stale_returns_true_when_no_prior_fetch() {
+        let adapter = GitHubAdapter::new(tracker_config());
+        assert!(adapter.cache_is_stale());
+    }
+
+    #[test]
+    fn cache_is_stale_returns_false_after_recent_update() {
+        let adapter = GitHubAdapter::new(tracker_config());
+        *adapter.last_graphql_fetch.write().unwrap() = Some(Utc::now());
+        assert!(!adapter.cache_is_stale());
     }
 }
