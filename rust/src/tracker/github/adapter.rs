@@ -11,6 +11,10 @@ use crate::tracker::{Issue, Tracker, TrackerError};
 
 const INITIAL_GRAPHQL_BACKOFF_SECS: u64 = 60;
 const MAX_GRAPHQL_BACKOFF_SECS: u64 = 15 * 60;
+/// Project status changes (e.g. dragging to "Todo" on the board) don't touch
+/// the issue itself, so the REST ETag never changes.  Force a full GraphQL
+/// refresh at least this often regardless of the tier-1 result.
+const CACHE_TTL_SECS: i64 = 120;
 
 pub struct GitHubAdapter {
     client: GitHubClient,
@@ -21,6 +25,8 @@ pub struct GitHubAdapter {
     change_etag: RwLock<Option<String>>,
     /// Exponential backoff state for GraphQL rate limits.
     graphql_backoff: RwLock<BackoffState>,
+    /// Timestamp of last successful GraphQL fetch (for cache TTL).
+    last_graphql_fetch: RwLock<Option<DateTime<Utc>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +105,7 @@ impl GitHubAdapter {
             project_cache: RwLock::new(None),
             change_etag: RwLock::new(None),
             graphql_backoff: RwLock::new(BackoffState::new()),
+            last_graphql_fetch: RwLock::new(None),
         }
     }
 
@@ -159,6 +166,15 @@ impl GitHubAdapter {
             .filter(|issue| requested.contains(&issue.state.to_lowercase()))
             .cloned()
             .collect()
+    }
+
+    /// Returns true if the project cache is older than CACHE_TTL_SECS.
+    fn cache_is_stale(&self) -> bool {
+        self.last_graphql_fetch
+            .read()
+            .unwrap()
+            .map(|t| (Utc::now() - t).num_seconds() >= CACHE_TTL_SECS)
+            .unwrap_or(true) // no fetch yet = stale
     }
 
     async fn check_for_changes(&self) -> Result<ChangeCheck, TrackerError> {
@@ -233,7 +249,7 @@ impl GitHubAdapter {
         }
 
         match self.check_for_changes().await {
-            Ok(ChangeCheck::Unchanged) => {
+            Ok(ChangeCheck::Unchanged) if !self.cache_is_stale() => {
                 if let Some(cached) = self.cached_project_items(requested_states) {
                     info!(
                         item_count = cached.len(),
@@ -242,6 +258,12 @@ impl GitHubAdapter {
                     return Ok(cached);
                 }
                 info!("tier1 change check: 304 no change but cache empty, fetching project items");
+            }
+            Ok(ChangeCheck::Unchanged) => {
+                info!(
+                    ttl_secs = CACHE_TTL_SECS,
+                    "tier1 change check: 304 but cache stale, forcing GraphQL refresh"
+                );
             }
             Ok(ChangeCheck::Changed) => {
                 info!("tier1 change check: 200 changes detected, fetching project items");
@@ -301,6 +323,7 @@ impl GitHubAdapter {
         }
         self.graphql_backoff.write().unwrap().record_success();
         *self.project_cache.write().unwrap() = Some(all_items.clone());
+        *self.last_graphql_fetch.write().unwrap() = Some(Utc::now());
 
         Ok(Self::filter_project_items(&all_items, requested_states))
     }
