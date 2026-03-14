@@ -667,3 +667,30 @@ fn next_attempt_increments_for_failures() {
     assert_eq!(next_attempt(Some(1), false), 2);
     assert_eq!(next_attempt(Some(4), false), 5);
 }
+
+#[test]
+fn should_stop_retrying_returns_false_within_limit() {
+    use rusty::orchestrator::should_stop_retrying;
+
+    assert!(!should_stop_retrying(1));
+    assert!(!should_stop_retrying(10));
+    assert!(!should_stop_retrying(20));
+}
+
+#[test]
+fn should_stop_retrying_returns_true_after_max_failure_retries() {
+    use rusty::orchestrator::{should_stop_retrying, MAX_FAILURE_RETRIES};
+
+    assert!(should_stop_retrying(MAX_FAILURE_RETRIES + 1));
+    assert!(should_stop_retrying(MAX_FAILURE_RETRIES + 10));
+}
+
+#[test]
+fn max_failure_retries_is_reasonable_value() {
+    use rusty::orchestrator::MAX_FAILURE_RETRIES;
+
+    // Must be at least as high as the highest warn threshold (20)
+    assert!(MAX_FAILURE_RETRIES >= 20);
+    // Must not be excessively high (sanity bound)
+    assert!(MAX_FAILURE_RETRIES <= 100);
+}
