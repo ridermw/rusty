@@ -24,7 +24,6 @@ use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
 use crate::cli::DashboardArgs;
-use crate::dashboard::humanize_event;
 use crate::orchestrator::state::TokenTotals;
 use crate::orchestrator::{OrchestratorSnapshot, RetrySnapshot, RunningSnapshot};
 
@@ -447,16 +446,20 @@ fn render_running_table(frame: &mut Frame<'_>, area: Rect, app: &mut DashboardAp
         .enumerate()
         .map(|(index, session)| running_row(index, session));
 
-    let header = Row::new(vec!["Issue", "State", "Turns", "Update", "Tokens"])
-        .style(Style::default().fg(ACCENT).bg(PANEL_BG).bold());
+    let header = Row::new(vec![
+        "Issue", "State", "PID", "Age / Turn", "Tokens", "Session", "Event",
+    ])
+    .style(Style::default().fg(ACCENT).bg(PANEL_BG).bold());
     let table = Table::new(
         rows,
         [
-            Constraint::Length(12),
-            Constraint::Length(12),
-            Constraint::Length(7),
-            Constraint::Min(12),
-            Constraint::Length(12),
+            Constraint::Length(12),  // Issue
+            Constraint::Length(12),  // State
+            Constraint::Length(9),   // PID
+            Constraint::Length(13),  // Age / Turn
+            Constraint::Length(12),  // Tokens
+            Constraint::Length(15),  // Session
+            Constraint::Min(16),     // Event
         ],
     )
     .header(header)
@@ -558,8 +561,15 @@ fn section_block<'a>(title: &'a str, focused: bool) -> Block<'a> {
 }
 
 fn running_row(index: usize, running: &RunningSnapshot) -> Row<'static> {
-    let row_bg = if index % 2 == 0 { PANEL_BG } else { BG };
-    let update = humanize_update(
+    let row_bg = if index.is_multiple_of(2) { PANEL_BG } else { BG };
+    let pid_str = running
+        .pid
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let age = format_age(&running.started_at);
+    let age_turn = format!("{} / {}", age, running.turn_count);
+    let session = truncate_session_id(running.session_id.as_deref());
+    let event = raw_event_text(
         running.last_event.as_deref(),
         running.last_message.as_deref(),
     );
@@ -567,15 +577,17 @@ fn running_row(index: usize, running: &RunningSnapshot) -> Row<'static> {
     Row::new(vec![
         Cell::from(truncate_with_ellipsis(&running.identifier, 12)),
         Cell::from(running.state.clone()).style(Style::default().fg(state_color(&running.state))),
-        Cell::from(running.turn_count.to_string()),
-        Cell::from(truncate_with_ellipsis(&update, 18)),
+        Cell::from(pid_str),
+        Cell::from(age_turn),
         Cell::from(format_with_commas(running.total_tokens)),
+        Cell::from(session),
+        Cell::from(truncate_with_ellipsis(&event, 40)),
     ])
     .style(Style::default().bg(row_bg).fg(TEXT))
 }
 
 fn retry_row(index: usize, retry: &RetrySnapshot) -> Row<'static> {
-    let row_bg = if index % 2 == 0 { PANEL_BG } else { BG };
+    let row_bg = if index.is_multiple_of(2) { PANEL_BG } else { BG };
 
     Row::new(vec![
         Cell::from(truncate_with_ellipsis(&retry.identifier, 12)),
@@ -589,22 +601,42 @@ fn retry_row(index: usize, retry: &RetrySnapshot) -> Row<'static> {
     .style(Style::default().bg(row_bg).fg(TEXT))
 }
 
-fn humanize_update(last_event: Option<&str>, last_message: Option<&str>) -> String {
-    if let Some(event) = last_event.filter(|event| !event.trim().is_empty()) {
-        let display = humanize_event(event);
-        if display == event {
-            return last_message
-                .filter(|message| !message.trim().is_empty())
-                .unwrap_or(display)
-                .to_string();
-        }
-        return display.to_string();
+/// Build raw event text for display (no humanization).
+/// Prefers last_message; falls back to last_event.
+fn raw_event_text(last_event: Option<&str>, last_message: Option<&str>) -> String {
+    if let Some(msg) = last_message.filter(|m| !m.trim().is_empty()) {
+        return msg.to_string();
     }
-
-    last_message
-        .filter(|message| !message.trim().is_empty())
+    last_event
+        .filter(|e| !e.trim().is_empty())
         .unwrap_or("-")
         .to_string()
+}
+
+/// Format an RFC 3339 timestamp as elapsed age: "Xm Ys".
+fn format_age(started_at: &str) -> String {
+    DateTime::parse_from_rfc3339(started_at)
+        .map(|ts| {
+            let elapsed = Utc::now().signed_duration_since(ts.with_timezone(&Utc));
+            let total_secs = elapsed.num_seconds().max(0);
+            if total_secs < 60 {
+                format!("{}s", total_secs)
+            } else {
+                format!("{}m {}s", total_secs / 60, total_secs % 60)
+            }
+        })
+        .unwrap_or_else(|_| "-".to_string())
+}
+
+/// Truncate a session ID to first 4 + last 6 chars.
+fn truncate_session_id(session_id: Option<&str>) -> String {
+    match session_id {
+        Some(sid) if sid.len() > 10 => {
+            format!("{}...{}", &sid[..4], &sid[sid.len() - 6..])
+        }
+        Some(sid) => sid.to_string(),
+        None => "-".to_string(),
+    }
 }
 
 fn format_due_at(value: &str) -> String {
@@ -754,6 +786,7 @@ impl From<ApiRunningSnapshot> for RunningSnapshot {
             issue_id: value.issue_id,
             identifier: value.identifier,
             state: value.state,
+            pid: None,
             session_id: value.session_id,
             turn_count: value.turn_count,
             last_event: value.last_event,

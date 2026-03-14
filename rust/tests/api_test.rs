@@ -46,6 +46,7 @@ fn make_snapshot() -> OrchestratorSnapshot {
             issue_id: issue.id.clone(),
             identifier: issue.identifier.clone(),
             issue,
+            pid: None,
             session_id: Some("session-1".into()),
             last_event: Some("running".into()),
             last_event_at: Some(
