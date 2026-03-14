@@ -247,6 +247,7 @@ fn dashboard_renders_snapshot() {
             input_tokens: 500,
             output_tokens: 200,
             total_tokens: 700,
+            issue_url: None,
         }],
         retrying: vec![],
         agent_totals: TokenTotals::default(),

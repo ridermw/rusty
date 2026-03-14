@@ -215,6 +215,7 @@ async fn build_snapshot_returns_correct_counts() {
             attempt: 2,
             due_at: at(2024, 1, 2, 4, 0, 0),
             error: Some("transient failure".into()),
+            issue_url: None,
         },
     );
     state.agent_totals = TokenTotals {
@@ -265,6 +266,7 @@ fn build_snapshot_includes_retry_entries() {
             attempt: 3,
             due_at: Utc::now(),
             error: Some("timeout".to_string()),
+            issue_url: None,
         },
     );
 

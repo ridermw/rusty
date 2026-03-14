@@ -313,6 +313,8 @@ async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
     let (orch_tx, orch_rx) =
         tokio::sync::mpsc::channel::<crate::orchestrator::OrchestratorMsg>(256);
 
+    let (sse_tx, _) = tokio::sync::broadcast::channel::<crate::orchestrator::OrchestratorSnapshot>(64);
+
     let shutdown_tx = orch_tx.clone();
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
@@ -324,6 +326,7 @@ async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
 
     if let Some(port) = args.port.or(config.server.port) {
         let tx = orch_tx.clone();
+        let sse = sse_tx.clone();
         let (server_ready_tx, server_ready_rx) =
             tokio::sync::oneshot::channel::<Result<(), String>>();
         tokio::spawn(async move {
@@ -331,7 +334,7 @@ async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
             match tokio::net::TcpListener::bind(addr).await {
                 Ok(listener) => {
                     let _ = server_ready_tx.send(Ok(()));
-                    let app = crate::server::api::build_router(tx);
+                    let app = crate::server::api::build_router_with_sse(tx, Some(sse));
                     info!(%addr, "HTTP server listening");
                     if let Err(e) = axum::serve(listener, app).await {
                         error!(error = %e, "HTTP server failed");
@@ -354,7 +357,7 @@ async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
 
     println!("✅ Rusty is running. Press Ctrl+C to stop.");
 
-    crate::orchestrator::run_orchestrator(
+    crate::orchestrator::run_orchestrator_with_sse(
         orch_state,
         config,
         tracker,
@@ -363,6 +366,7 @@ async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
         shell_executor,
         orch_rx,
         orch_tx,
+        Some(sse_tx),
     )
     .await;
 

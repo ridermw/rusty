@@ -1,25 +1,43 @@
 use axum::{
     extract::{Path, State as AxumState},
     http::StatusCode,
-    response::{Html, IntoResponse},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        Html, IntoResponse,
+    },
     routing::{get, post},
     Json, Router,
 };
+use futures_util::stream::Stream;
 use serde_json::json;
-use tokio::sync::{mpsc, oneshot};
+use std::convert::Infallible;
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::orchestrator::{OrchestratorMsg, OrchestratorSnapshot};
 
 #[derive(Clone)]
 pub struct AppState {
     pub orchestrator_tx: mpsc::Sender<OrchestratorMsg>,
+    pub sse_tx: broadcast::Sender<OrchestratorSnapshot>,
 }
 
 pub fn build_router(orchestrator_tx: mpsc::Sender<OrchestratorMsg>) -> Router {
-    let state = AppState { orchestrator_tx };
+    build_router_with_sse(orchestrator_tx, None)
+}
+
+pub fn build_router_with_sse(
+    orchestrator_tx: mpsc::Sender<OrchestratorMsg>,
+    sse_tx: Option<broadcast::Sender<OrchestratorSnapshot>>,
+) -> Router {
+    let sse_tx = sse_tx.unwrap_or_else(|| broadcast::channel(64).0);
+    let state = AppState {
+        orchestrator_tx,
+        sse_tx,
+    };
     Router::new()
         .route("/", get(dashboard_handler))
         .route("/api/v1/state", get(get_state))
+        .route("/api/v1/events", get(get_events))
         .route("/api/v1/refresh", post(post_refresh))
         .route("/api/v1/:issue_identifier", get(get_issue))
         .fallback(fallback_handler)
@@ -28,18 +46,7 @@ pub fn build_router(orchestrator_tx: mpsc::Sender<OrchestratorMsg>) -> Router {
 
 async fn get_state(AxumState(state): AxumState<AppState>) -> impl IntoResponse {
     match request_snapshot(&state.orchestrator_tx).await {
-        Some(snapshot) => Json(json!({
-            "generated_at": chrono::Utc::now().to_rfc3339(),
-            "counts": {
-                "running": snapshot.running_count,
-                "retrying": snapshot.retrying_count
-            },
-            "running": snapshot.running,
-            "retrying": snapshot.retrying,
-            "codex_totals": snapshot.agent_totals,
-            "rate_limits": null
-        }))
-        .into_response(),
+        Some(snapshot) => Json(snapshot_to_json(&snapshot)).into_response(),
         None => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({
@@ -48,6 +55,51 @@ async fn get_state(AxumState(state): AxumState<AppState>) -> impl IntoResponse {
         )
             .into_response(),
     }
+}
+
+async fn get_events(
+    AxumState(state): AxumState<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let mut rx = state.sse_tx.subscribe();
+
+    let stream = async_stream::stream! {
+        // Send initial snapshot so client has immediate state
+        if let Some(snapshot) = request_snapshot(&state.orchestrator_tx).await {
+            let json = snapshot_to_json(&snapshot);
+            if let Ok(data) = serde_json::to_string(&json) {
+                yield Ok(Event::default().event("snapshot").data(data));
+            }
+        }
+
+        loop {
+            match rx.recv().await {
+                Ok(snapshot) => {
+                    let json = snapshot_to_json(&snapshot);
+                    if let Ok(data) = serde_json::to_string(&json) {
+                        yield Ok(Event::default().event("snapshot").data(data));
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+fn snapshot_to_json(snapshot: &OrchestratorSnapshot) -> serde_json::Value {
+    json!({
+        "generated_at": chrono::Utc::now().to_rfc3339(),
+        "counts": {
+            "running": snapshot.running_count,
+            "retrying": snapshot.retrying_count
+        },
+        "running": snapshot.running,
+        "retrying": snapshot.retrying,
+        "codex_totals": snapshot.agent_totals,
+        "rate_limits": null
+    })
 }
 
 async fn get_issue(
