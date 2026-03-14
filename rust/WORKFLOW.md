@@ -15,15 +15,17 @@ tracker:
     - "Cancelled"
     - "Duplicate"
   project:
-    enabled: false
+    enabled: true
     owner_type: "user"
     owner_name: "ridermw"
-    project_number: 0
+    project_number: 5
     status_field: "Status"
+    status_field_id: "PVTSSF_lAHOAFl5zs4BRqBNzg_a8jM"
+    project_id: "PVT_kwHOAFl5zs4BRqBN"
     active_states:
       - "Todo"
-      - "In Progress"
-      - "Human Review"
+      - "InProgress"
+      - "HumanReview"
       - "Merging"
       - "Rework"
     terminal_states:
@@ -118,7 +120,7 @@ The agent should be able to use GitHub through `gh` and Copilot CLI through `cop
 
 ## Status map
 
-Use labels as the primary state mechanism unless a GitHub Project status field is configured and writable.
+Use the GitHub Project status field as the primary state mechanism. Update status using the project CLI commands documented below. Do NOT use labels for state tracking.
 
 1. `Backlog`
    Out of scope for this workflow. Do not modify.
@@ -145,7 +147,7 @@ Use labels as the primary state mechanism unless a GitHub Project status field i
 ## Step 0: Determine current issue state and route
 
 1. Fetch the issue by explicit issue number.
-2. Read the current state from labels first, then project status if configured.
+2. Read the current state from the GitHub Project status field.
 3. Route to the matching flow:
    1. `Backlog`
       Do not modify issue content or state. Stop and wait for human to move it to `Todo`.
@@ -166,7 +168,7 @@ Use labels as the primary state mechanism unless a GitHub Project status field i
    1. If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non reusable for this run.
    2. Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
 5. For `Todo` issues, do startup sequencing in this exact order:
-   1. Update labels or project state to `InProgress`
+   1. Update project status to `InProgress` using the project CLI commands below
    2. Find or create `## Rusty Workpad` bootstrap comment
    3. Only then begin analysis, planning, and implementation work
 6. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
@@ -334,27 +336,42 @@ Use these labels if they do not already exist:
 
 ## Suggested GitHub CLI operations
 
-Use these commands or their API equivalents as the default control plane:
+Use these commands or their API equivalents as the default control plane.
+
+### Reading
 
 1. Read issue\
    `gh issue view <number> --repo ridermw/rusty --json number,title,body,state,labels,comments,url`
 
-2. Add label\
-   `gh issue edit <number> --repo ridermw/rusty --add-label InProgress`
-
-3. Remove label\
-   `gh issue edit <number> --repo ridermw/rusty --remove-label Todo`
-
-4. Create PR\
-   `gh pr create --repo ridermw/rusty --fill`
-
-5. Read PR reviews\
+2. Read PR reviews\
    `gh pr view <pr> --repo ridermw/rusty --json reviews,comments,labels,commits,statusCheckRollup`
 
-6. Read inline review comments\
+3. Read inline review comments\
    `gh api repos/ridermw/rusty/pulls/<pr>/comments`
 
-7. Add PR label\
+### State transitions (use Project status, not labels)
+
+4. Get the project item ID for an issue\
+   `gh project item-list 5 --owner ridermw --format json | jq '.items[] | select(.content.number == <number>)'`
+
+5. Set status to InProgress\
+   `gh project item-edit --project-id PVT_kwHOAFl5zs4BRqBN --id <ITEM_ID> --field-id PVTSSF_lAHOAFl5zs4BRqBNzg_a8jM --single-select-option-id 47fc9ee4`
+
+6. Status option IDs for quick reference:
+   - Backlog: `f75ad846`
+   - Todo: `61e4505c`
+   - InProgress: `47fc9ee4`
+   - HumanReview: `df73e18b`
+   - Merging: `37ec4a6e`
+   - Rework: `84ea7dca`
+   - Done: `98236657`
+
+### PRs
+
+7. Create PR\
+   `gh pr create --repo ridermw/rusty --fill`
+
+8. Add PR label\
    `gh pr edit <pr> --repo ridermw/rusty --add-label rusty`
 
 ## Workpad template
