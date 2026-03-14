@@ -100,3 +100,37 @@ fn missing_attempt_variable_is_falsey_in_conditionals() {
 
     assert_eq!(rendered, "");
 }
+
+#[test]
+fn renders_none_description_as_empty_string() {
+    let issue = test_issue("1", "ISSUE-1", "No desc issue", "open", None);
+
+    let rendered =
+        render_prompt("desc=[{{ issue.description }}]", &issue, None).unwrap();
+
+    assert_eq!(rendered, "desc=[]");
+}
+
+#[test]
+fn renders_special_characters_in_fields() {
+    let mut issue = test_issue("1", "ISSUE-1", "Fix <html> & \"quotes\"", "open", None);
+    issue.description = Some("Héllo wörld 🚀 foo&bar".to_string());
+
+    let rendered = render_prompt(
+        "{{ issue.title }} — {{ issue.description }}",
+        &issue,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(rendered, "Fix <html> & \"quotes\" — Héllo wörld 🚀 foo&bar");
+}
+
+#[test]
+fn returns_parse_error_for_invalid_liquid_syntax() {
+    let issue = sample_issue();
+
+    let error = render_prompt("{% if %}", &issue, None).unwrap_err();
+
+    assert!(matches!(error, ConfigError::TemplateParseError(_)));
+}
