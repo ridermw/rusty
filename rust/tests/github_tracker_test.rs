@@ -452,3 +452,199 @@ async fn fetch_issues_by_numbers_skips_non_success_responses() {
 
     assert!(issues.is_empty());
 }
+
+// --- normalize_github_issue edge-case tests ---
+
+#[test]
+fn normalize_returns_none_when_number_missing() {
+    let result = normalize_github_issue(
+        &json!({"title": "No number", "state": "open"}),
+        "demo-repo",
+        &github_config(&[]),
+    );
+    assert!(result.is_none());
+}
+
+#[test]
+fn normalize_returns_none_when_title_missing() {
+    let result = normalize_github_issue(
+        &json!({"number": 1, "state": "open"}),
+        "demo-repo",
+        &github_config(&[]),
+    );
+    assert!(result.is_none());
+}
+
+#[test]
+fn normalize_returns_none_when_state_missing() {
+    let result = normalize_github_issue(
+        &json!({"number": 1, "title": "No state"}),
+        "demo-repo",
+        &github_config(&[]),
+    );
+    assert!(result.is_none());
+}
+
+#[test]
+fn normalize_returns_none_for_pull_request() {
+    let result = normalize_github_issue(
+        &json!({
+            "number": 10, "title": "A PR", "state": "open",
+            "labels": [],
+            "pull_request": {"url": "https://api.github.com/repos/acme/demo-repo/pulls/10"}
+        }),
+        "demo-repo",
+        &github_config(&[]),
+    );
+    assert!(result.is_none());
+}
+
+#[test]
+fn normalize_multiple_state_labels_picks_first_matching() {
+    let config = TrackerConfig {
+        repo: Some("acme/demo-repo".to_string()),
+        state_labels: [
+            ("todo".to_string(), "Todo".to_string()),
+            ("in-progress".to_string(), "InProgress".to_string()),
+        ]
+        .into_iter()
+        .collect::<HashMap<_, _>>(),
+        ..TrackerConfig::default()
+    };
+
+    let issue = normalize_github_issue(
+        &json!({
+            "number": 5,
+            "title": "Has two state labels",
+            "state": "open",
+            "labels": [{"name": "Todo"}, {"name": "In-Progress"}]
+        }),
+        "demo-repo",
+        &config,
+    )
+    .expect("should normalize");
+
+    // One of the mapped states should be picked (whichever label matches first)
+    assert!(
+        issue.state == "Todo" || issue.state == "InProgress",
+        "expected mapped state, got: {}",
+        issue.state
+    );
+}
+
+#[test]
+fn normalize_state_labels_miss_falls_back_to_github_state() {
+    let config = TrackerConfig {
+        repo: Some("acme/demo-repo".to_string()),
+        state_labels: [("done".to_string(), "Done".to_string())]
+            .into_iter()
+            .collect::<HashMap<_, _>>(),
+        ..TrackerConfig::default()
+    };
+
+    let issue = normalize_github_issue(
+        &json!({
+            "number": 6,
+            "title": "No matching state label",
+            "state": "open",
+            "labels": [{"name": "enhancement"}]
+        }),
+        "demo-repo",
+        &config,
+    )
+    .expect("should normalize");
+
+    assert_eq!(issue.state, "open", "should fall back to github state");
+}
+
+// --- Additional GitHubClient integration tests ---
+
+#[tokio::test]
+async fn fetch_issues_by_numbers_returns_multiple_skips_404() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!(
+            {"number": 1, "title": "First", "state": "open", "labels": []}
+        )))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues/2"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues/3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!(
+            {"number": 3, "title": "Third", "state": "closed", "labels": []}
+        )))
+        .mount(&server)
+        .await;
+
+    let client = GitHubClient::new();
+    let config = test_tracker_config(&server.uri());
+    let issues = client
+        .fetch_issues_by_numbers(&config, &[1, 2, 3])
+        .await
+        .unwrap();
+
+    assert_eq!(issues.len(), 2);
+    assert_eq!(issues[0].identifier, "testrepo-1");
+    assert_eq!(issues[1].identifier, "testrepo-3");
+}
+
+#[tokio::test]
+async fn fetch_issues_empty_first_page_returns_empty() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+
+    let client = GitHubClient::new();
+    let config = test_tracker_config(&server.uri());
+    let issues = client.fetch_issues(&config, "open", None).await.unwrap();
+
+    assert!(issues.is_empty());
+}
+
+#[tokio::test]
+async fn fetch_issues_etag_updated_on_200_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "\"new-etag-value\"")
+                .set_body_json(json!([
+                    {"number": 1, "title": "Fresh", "state": "open", "labels": []}
+                ])),
+        )
+        .mount(&server)
+        .await;
+
+    let client = GitHubClient::new();
+    let config = test_tracker_config(&server.uri());
+    let issues = client.fetch_issues(&config, "open", None).await.unwrap();
+
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].title, "Fresh");
+
+    // Second call should send the cached etag
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/testowner/testrepo/issues"))
+        .and(header("If-None-Match", "\"new-etag-value\""))
+        .respond_with(ResponseTemplate::new(304))
+        .mount(&server)
+        .await;
+
+    let issues2 = client.fetch_issues(&config, "open", None).await.unwrap();
+    assert_eq!(issues2.len(), 1);
+    assert_eq!(issues2[0].title, "Fresh");
+}
