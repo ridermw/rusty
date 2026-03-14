@@ -1,0 +1,53 @@
+# cargo-deny configuration for license auditing
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
+# https://embarkstudios.github.io/cargo-deny/checks/licenses/cfg.html
+[licenses]
+# Confidence threshold for license detection (0.0 - 1.0)
+confidence-threshold = 0.8
+
+# Only these licenses are permitted. Any dependency whose license is not in
+# this list will cause `cargo deny check licenses` to fail, which implicitly
+# denies all copyleft licenses (GPL, AGPL, LGPL, MPL, EUPL, SSPL, etc.).
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "Unicode-3.0",
+]
+
+# Per-crate exceptions for licenses not in the global allow list
+exceptions = [
+    # option-ext uses MPL-2.0 (file-level weak copyleft); transitive dep of dirs
+    { allow = ["MPL-2.0"], crate = "option-ext" },
+]
+
+# The workspace crate (rusty) has no license field and is not published.
+# Clarify it as MIT so cargo-deny does not flag it as unlicensed.
+[[licenses.clarify]]
+crate = "rusty"
+expression = "MIT"
+license-files = []
+
+[licenses.private]
+# Ignore workspace crates that aren't published
+ignore = true
+registries = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
