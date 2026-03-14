@@ -34,7 +34,7 @@ tracker:
       - "Cancelled"
       - "Duplicate"
 polling:
-  interval_ms: 5000
+  interval_ms: 30000
 workspace:
   root: $RUSTY_WORKSPACE_ROOT
 hooks:
