@@ -310,7 +310,7 @@ fn render(frame: &mut Frame<'_>, app: &mut DashboardApp) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(5),
+            Constraint::Length(6),
             Constraint::Min(6),
             Constraint::Min(5),
             Constraint::Length(1),
@@ -351,44 +351,103 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, last_updated: Option<DateTim
 }
 
 fn render_metrics(frame: &mut Frame<'_>, area: Rect, snapshot: &OrchestratorSnapshot) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Length(2)])
+        .split(area);
+
     let cards = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
         ])
-        .split(area);
+        .split(rows[0]);
 
     render_metric_card(
         frame,
         cards[0],
-        "Running",
-        format_with_commas(snapshot.running_count as u64),
+        "Agents",
+        format!("{}/{}", snapshot.running_count, snapshot.max_agents),
         Color::Green,
     );
     render_metric_card(
         frame,
         cards[1],
-        "Retrying",
-        format_with_commas(snapshot.retrying_count as u64),
-        Color::Yellow,
+        "Throughput",
+        format!("{} tps", format_with_commas(snapshot.throughput_tps as u64)),
+        Color::Cyan,
     );
     render_metric_card(
         frame,
         cards[2],
-        "Tokens",
-        format_with_commas(snapshot.agent_totals.total_tokens),
-        ACCENT,
-    );
-    render_metric_card(
-        frame,
-        cards[3],
         "Runtime",
         format_runtime(snapshot.agent_totals.seconds_running),
         INFO,
     );
+    render_metric_card(
+        frame,
+        cards[3],
+        "Tokens In",
+        format_with_commas(snapshot.agent_totals.input_tokens),
+        ACCENT,
+    );
+    render_metric_card(
+        frame,
+        cards[4],
+        "Tokens Out",
+        format_with_commas(snapshot.agent_totals.output_tokens),
+        ACCENT,
+    );
+
+    // Second row: rate limits, project link, total tokens, next refresh
+    let detail_spans = build_detail_spans(snapshot);
+    frame.render_widget(
+        Paragraph::new(Line::from(detail_spans))
+            .style(Style::default().bg(BG).fg(MUTED))
+            .wrap(Wrap { trim: true }),
+        rows[1],
+    );
+}
+
+fn build_detail_spans(snapshot: &OrchestratorSnapshot) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+
+    spans.push(Span::styled(
+        format!("Total tokens: {} ", format_with_commas(snapshot.agent_totals.total_tokens)),
+        Style::default().fg(TEXT),
+    ));
+    spans.push(Span::styled("│ ", Style::default().fg(MUTED)));
+
+    let rl_text = match &snapshot.rate_limits {
+        Some(val) => format!("Rate Limits: {} ", val),
+        None => "Rate Limits: n/a ".to_string(),
+    };
+    spans.push(Span::styled(rl_text, Style::default().fg(MUTED)));
+    spans.push(Span::styled("│ ", Style::default().fg(MUTED)));
+
+    if let Some(ref url) = snapshot.project_url {
+        spans.push(Span::styled(
+            format!("Project: {} ", url),
+            Style::default().fg(INFO),
+        ));
+        spans.push(Span::styled("│ ", Style::default().fg(MUTED)));
+    }
+
+    if let Some(ref next_tick) = snapshot.next_tick_at {
+        let display = chrono::DateTime::parse_from_rfc3339(next_tick)
+            .map(|dt| dt.with_timezone(&Local).format("%H:%M:%S").to_string())
+            .unwrap_or_else(|_| next_tick.clone());
+        spans.push(Span::styled(
+            format!("Next refresh: {}", display),
+            Style::default().fg(MUTED),
+        ));
+    }
+
+    spans
 }
 
 fn render_metric_card(
@@ -690,9 +749,14 @@ fn empty_snapshot() -> OrchestratorSnapshot {
     OrchestratorSnapshot {
         running_count: 0,
         retrying_count: 0,
+        max_agents: 0,
+        throughput_tps: 0.0,
         running: Vec::new(),
         retrying: Vec::new(),
         agent_totals: TokenTotals::default(),
+        rate_limits: None,
+        project_url: None,
+        next_tick_at: None,
     }
 }
 
@@ -700,9 +764,19 @@ fn empty_snapshot() -> OrchestratorSnapshot {
 struct DashboardApiResponse {
     generated_at: String,
     counts: DashboardCounts,
+    #[serde(default)]
+    max_agents: usize,
+    #[serde(default)]
+    throughput_tps: f64,
     running: Vec<ApiRunningSnapshot>,
     retrying: Vec<ApiRetrySnapshot>,
     codex_totals: ApiTokenTotals,
+    #[serde(default)]
+    rate_limits: Option<serde_json::Value>,
+    #[serde(default)]
+    project_url: Option<String>,
+    #[serde(default)]
+    next_tick_at: Option<String>,
 }
 
 impl DashboardApiResponse {
@@ -714,9 +788,14 @@ impl DashboardApiResponse {
             snapshot: OrchestratorSnapshot {
                 running_count: self.counts.running,
                 retrying_count: self.counts.retrying,
+                max_agents: self.max_agents,
+                throughput_tps: self.throughput_tps,
                 running: self.running.into_iter().map(Into::into).collect(),
                 retrying: self.retrying.into_iter().map(Into::into).collect(),
                 agent_totals: self.codex_totals.into(),
+                rate_limits: self.rate_limits,
+                project_url: self.project_url,
+                next_tick_at: self.next_tick_at,
             },
         }
     }
@@ -837,6 +916,8 @@ mod tests {
         let payload = r#"{
             "generated_at": "2026-03-14T10:01:46Z",
             "counts": { "running": 2, "retrying": 0 },
+            "max_agents": 50,
+            "throughput_tps": 658.5,
             "running": [
                 {
                     "issue_id": "28",
@@ -859,7 +940,9 @@ mod tests {
                 "total_tokens": 1500,
                 "seconds_running": 923.5
             },
-            "rate_limits": null
+            "rate_limits": null,
+            "project_url": "https://github.com/orgs/test/projects/1",
+            "next_tick_at": "2026-03-14T10:02:00Z"
         }"#;
 
         let response: DashboardApiResponse = serde_json::from_str(payload).expect("valid payload");
@@ -867,8 +950,19 @@ mod tests {
 
         assert_eq!(state.snapshot.running_count, 2);
         assert_eq!(state.snapshot.retrying_count, 0);
+        assert_eq!(state.snapshot.max_agents, 50);
+        assert!((state.snapshot.throughput_tps - 658.5).abs() < f64::EPSILON);
         assert_eq!(state.snapshot.running[0].identifier, "rusty-28");
         assert_eq!(state.snapshot.agent_totals.total_tokens, 1_500);
+        assert_eq!(
+            state.snapshot.project_url.as_deref(),
+            Some("https://github.com/orgs/test/projects/1")
+        );
+        assert_eq!(
+            state.snapshot.next_tick_at.as_deref(),
+            Some("2026-03-14T10:02:00Z")
+        );
+        assert!(state.snapshot.rate_limits.is_none());
         assert!(state.generated_at.is_some());
     }
 }

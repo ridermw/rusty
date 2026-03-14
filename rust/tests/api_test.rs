@@ -124,6 +124,11 @@ async fn get_state_returns_200_with_json_snapshot() {
     assert_eq!(json["counts"]["retrying"], 0);
     assert_eq!(json["running"][0]["identifier"], "ISSUE-1");
     assert_eq!(json["codex_totals"]["total_tokens"], 150);
+    assert_eq!(json["max_agents"], 2);
+    assert!(json["throughput_tps"].as_f64().unwrap() > 0.0);
+    assert!(json["rate_limits"].is_null());
+    assert!(json["project_url"].is_null());
+    assert!(json["next_tick_at"].is_null());
     assert!(json["generated_at"].is_string());
 }
 

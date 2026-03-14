@@ -10,17 +10,34 @@ pub fn render_dashboard(snapshot: &OrchestratorSnapshot) -> String {
 
     out.push_str("═══ Rusty Status ═══\n\n");
     out.push_str(&format!(
-        "Running: {}  |  Retrying: {}  |  Tokens: {} (in:{} out:{})\n",
+        "Agents: {}/{}  |  Throughput: {:.0} tps  |  Runtime: {:.1}s\n",
         snapshot.running_count,
-        snapshot.retrying_count,
-        snapshot.agent_totals.total_tokens,
-        snapshot.agent_totals.input_tokens,
-        snapshot.agent_totals.output_tokens,
-    ));
-    out.push_str(&format!(
-        "Runtime: {:.1}s\n\n",
+        snapshot.max_agents,
+        snapshot.throughput_tps,
         snapshot.agent_totals.seconds_running,
     ));
+    out.push_str(&format!(
+        "Tokens: in {} | out {} | total {}\n",
+        snapshot.agent_totals.input_tokens,
+        snapshot.agent_totals.output_tokens,
+        snapshot.agent_totals.total_tokens,
+    ));
+
+    if let Some(ref limits) = snapshot.rate_limits {
+        out.push_str(&format!("Rate Limits: {}\n", limits));
+    } else {
+        out.push_str("Rate Limits: n/a\n");
+    }
+
+    if let Some(ref url) = snapshot.project_url {
+        out.push_str(&format!("Project: {}\n", url));
+    }
+
+    if let Some(ref next_tick) = snapshot.next_tick_at {
+        out.push_str(&format!("Next refresh: {}\n", next_tick));
+    }
+
+    out.push('\n');
 
     if snapshot.running.is_empty() {
         out.push_str("No running sessions.\n");
