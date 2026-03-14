@@ -115,6 +115,15 @@ fn is_eligible_returns_false_for_already_claimed_issue() {
 }
 
 #[test]
+fn is_eligible_returns_false_for_already_completed_issue() {
+    let mut state = OrchestratorState::new(1_000, 2);
+    let issue = make_issue("1", "ISSUE-1", "open", Some(1));
+    state.completed.insert(issue.id.clone());
+
+    assert!(!is_eligible(&issue, &state, &test_config()));
+}
+
+#[test]
 fn is_eligible_returns_false_when_global_slots_exhausted() {
     let state = OrchestratorState::new(1_000, 0);
     let issue = make_issue("1", "ISSUE-1", "open", Some(1));
