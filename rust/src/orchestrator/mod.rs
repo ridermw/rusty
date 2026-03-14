@@ -109,6 +109,10 @@ pub fn is_eligible(issue: &Issue, state: &OrchestratorState, config: &RustyConfi
         return false;
     }
 
+    if state.completed.contains(&issue.id) {
+        return false;
+    }
+
     if state.available_global_slots() == 0 {
         return false;
     }
