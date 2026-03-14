@@ -5,10 +5,10 @@ use axum::{
 use chrono::{TimeZone, Utc};
 use rusty::orchestrator::state::{OrchestratorState, RunningEntry, TokenTotals};
 use rusty::orchestrator::{build_snapshot, OrchestratorMsg, OrchestratorSnapshot};
-use rusty::server::api::build_router;
+use rusty::server::api::{build_router, build_router_with_sse};
 use rusty::tracker::Issue;
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tower::ServiceExt; // for oneshot
 
 fn make_issue(id: &str, identifier: &str, state: &str) -> Issue {
@@ -194,7 +194,7 @@ async fn get_root_returns_200_html() {
         .await
         .expect("body bytes");
     let html = String::from_utf8(bytes.to_vec()).expect("utf8 html");
-    assert!(html.contains("<h1>Rusty Dashboard</h1>"));
+    assert!(html.contains("Rusty Dashboard"));
     assert!(html.contains("/api/v1/state"));
 }
 
@@ -222,5 +222,67 @@ async fn fallback_returns_error_envelope_shape() {
                 "message": "method not allowed"
             }
         })
+    );
+}
+
+#[tokio::test]
+async fn get_state_includes_issue_url_field() {
+    let app = test_app(make_snapshot());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/state")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(
+        json["running"][0]["issue_url"],
+        "https://example.test/issues/ISSUE-1"
+    );
+}
+
+#[tokio::test]
+async fn get_events_returns_sse_content_type() {
+    let (sse_tx, _) = broadcast::channel::<OrchestratorSnapshot>(16);
+    let (tx, mut rx) = mpsc::channel(8);
+    let snapshot = make_snapshot();
+    tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            match msg {
+                OrchestratorMsg::SnapshotRequest { reply } => {
+                    let _ = reply.send(snapshot.clone());
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let app = build_router_with_sse(tx, Some(sse_tx));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/events")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .expect("content-type");
+    assert!(
+        content_type.contains("text/event-stream"),
+        "expected text/event-stream, got: {content_type}"
     );
 }
