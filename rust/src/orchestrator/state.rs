@@ -17,6 +17,7 @@ pub struct RunningEntry {
     pub issue_id: String,
     pub identifier: String,
     pub issue: Issue,
+    pub pid: Option<u32>,
     pub session_id: Option<String>,
     pub last_event: Option<String>,
     pub last_event_at: Option<DateTime<Utc>>,
