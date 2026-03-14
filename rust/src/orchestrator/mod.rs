@@ -264,6 +264,15 @@ pub fn reconcile_against_tracker(
 /// exponential backoff to avoid burning API calls on no-op workers.
 const MAX_CONTINUATION_RETRIES: u32 = 3;
 
+/// After this many consecutive failure retries, stop scheduling
+/// further retries and set the project status to HumanReview.
+pub const MAX_FAILURE_RETRIES: u32 = 20;
+
+/// Check if a failure retry attempt has exceeded the maximum allowed retries.
+pub fn should_stop_retrying(attempt: u32) -> bool {
+    attempt > MAX_FAILURE_RETRIES
+}
+
 /// Calculate backoff delay in milliseconds for a retry attempt.
 pub fn calculate_backoff(attempt: u32, max_backoff_ms: u64, is_continuation: bool) -> u64 {
     if is_continuation {
@@ -374,6 +383,20 @@ fn apply_agent_update_to_state(
                 total_tokens,
             );
         }
+    }
+}
+
+/// Spawn a fire-and-forget task that updates the GitHub Project status for an issue.
+/// No-op when `project_number` is not configured.
+fn spawn_project_status_update(config: &RustyConfig, issue_id: &str, status: &str) {
+    if config.tracker.project_number.unwrap_or(0) > 0 {
+        let owner = config.tracker.owner.clone().unwrap_or_default();
+        let proj_num = config.tracker.project_number.unwrap_or(0);
+        let issue_num = issue_id.to_string();
+        let status = status.to_string();
+        tokio::spawn(async move {
+            update_project_status(&owner, proj_num, &issue_num, &status).await;
+        });
     }
 }
 
@@ -595,6 +618,9 @@ pub async fn run_orchestrator(
                                             state.claimed.remove(&issue_id);
                                             state.retry_attempts.remove(&issue_id);
                                             state.completed_counts.remove(&issue_id);
+
+                                            // Terminal state (e.g. issue closed by merged PR) → Done
+                                            spawn_project_status_update(&config, &issue_id, "Done");
                                         }
                                     }
                                     ReconcileAction::StopNoCleanup(issue_id) => {
@@ -605,6 +631,9 @@ pub async fn run_orchestrator(
                                             state.claimed.remove(&issue_id);
                                             state.retry_attempts.remove(&issue_id);
                                             state.completed_counts.remove(&issue_id);
+
+                                            // Non-terminal inactive state → needs human attention
+                                            spawn_project_status_update(&config, &issue_id, "HumanReview");
                                         }
                                     }
                                     ReconcileAction::UpdateState(issue_id, issue) => {
@@ -666,14 +695,7 @@ pub async fn run_orchestrator(
                             tracing::info!(%issue_id, %identifier, attempt = ?retry_attempt, "dispatching issue");
 
                             // Update project status to InProgress on dispatch
-                            if config.tracker.project_number.unwrap_or(0) > 0 {
-                                let owner = config.tracker.owner.clone().unwrap_or_default();
-                                let proj_num = config.tracker.project_number.unwrap_or(0);
-                                let issue_num = issue_id.clone();
-                                tokio::spawn(async move {
-                                    update_project_status(&owner, proj_num, &issue_num, "InProgress").await;
-                                });
-                            }
+                            spawn_project_status_update(&config, &issue_id, "InProgress");
 
                             let dispatch_config = config.clone();
                             let dispatch_prompt = workflow_prompt.clone();
@@ -752,6 +774,10 @@ pub async fn run_orchestrator(
                             add_runtime_seconds(&mut state.agent_totals, &entry);
                             let delay_ms = if success {
                                 state.completed.insert(issue_id.clone());
+
+                                // Agent completed successfully — mark for human review
+                                spawn_project_status_update(&config, &issue_id, "HumanReview");
+
                                 let consecutive = state
                                     .completed_counts
                                     .entry(issue_id.clone())
@@ -782,6 +808,19 @@ pub async fn run_orchestrator(
                                 }
                             } else {
                                 state.completed_counts.remove(&issue_id);
+
+                                if should_stop_retrying(retry_attempt) {
+                                    // Exhausted retries — escalate for human review
+                                    tracing::warn!(
+                                        %issue_id,
+                                        attempt = retry_attempt,
+                                        ?error,
+                                        "worker exceeded max failure retries; setting HumanReview"
+                                    );
+                                    spawn_project_status_update(&config, &issue_id, "HumanReview");
+                                    continue;
+                                }
+
                                 let delay = calculate_backoff(
                                     retry_attempt,
                                     config.agent.max_retry_backoff_ms,
