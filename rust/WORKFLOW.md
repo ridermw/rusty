@@ -36,7 +36,7 @@ tracker:
 polling:
   interval_ms: 5000
 workspace:
-  root: ~/code/rusty_workspaces
+  root: $RUSTY_WORKSPACE_ROOT
 hooks:
   after_create: |
     git clone --depth 1 https://github.com/ridermw/rusty .
