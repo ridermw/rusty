@@ -189,7 +189,7 @@ impl Tracker for GitHubAdapter {
     async fn fetch_issue_states_by_ids(&self, ids: &[String]) -> Result<Vec<Issue>, TrackerError> {
         if self.project_enabled() {
             // For reconciliation, get project status for these specific issues
-            let all_states = self
+            let _all_states = self
                 .fetch_project_items(&[]) // fetch all statuses
                 .await
                 .unwrap_or_default();

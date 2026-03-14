@@ -1,5 +1,6 @@
 pub mod acp_client;
 pub mod dynamic_tool;
+pub mod log_parser;
 
 pub use acp_client::{
     AcpClient, AgentError, AgentEvent, ChildGuard, JsonRpcMessage, JsonRpcResponse, TurnResult,
@@ -142,7 +143,7 @@ pub async fn run_agent_attempt(
 
         let launch_cmd = crate::config::agent_launch_command(&config);
         let command_parts: Vec<&str> = launch_cmd.split_whitespace().collect();
-        let (cmd, args): (&str, &[&str]) = match command_parts.split_first() {
+        let (cmd, base_args): (&str, &[&str]) = match command_parts.split_first() {
             Some((cmd, args)) => (*cmd, args),
             None => {
                 warn!("agent.command is empty, falling back to copilot --acp");
@@ -150,7 +151,29 @@ pub async fn run_agent_attempt(
             }
         };
 
-        let mut client = match AcpClient::launch(cmd, args, &ws_path) {
+        // When log_dir is configured, create a per-session subdirectory and
+        // inject `--log-dir <path>` into the agent command so Copilot CLI
+        // writes its internal logs there. We parse those logs post-session
+        // to extract token usage metrics not available over ACP.
+        let session_log_dir = config.agent.log_dir.as_ref().map(|base| {
+            let session_stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+            let dir = std::path::PathBuf::from(base)
+                .join(format!("{}-{}", issue.identifier, session_stamp));
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                warn!(dir = %dir.display(), error = %e, "failed to create agent log directory");
+            }
+            dir
+        });
+
+        let mut owned_args: Vec<String> = base_args.iter().map(|s| s.to_string()).collect();
+        if let Some(ref log_dir) = session_log_dir {
+            owned_args.push("--log-dir".to_string());
+            owned_args.push(log_dir.to_string_lossy().to_string());
+            info!(log_dir = %log_dir.display(), "injecting --log-dir for token metrics");
+        }
+        let final_args: Vec<&str> = owned_args.iter().map(|s| s.as_str()).collect();
+
+        let mut client = match AcpClient::launch(cmd, &final_args, &ws_path) {
             Ok(client) => client,
             Err(e) => {
                 let error_message = format!("agent launch: {e}");
@@ -289,6 +312,7 @@ pub async fn run_agent_attempt(
                     let error_message = format!("turn failed: {reason}");
                     error!(%turn_id, %reason, "turn failed");
                     let _ = client.stop().await;
+                    emit_log_token_usage(&session_log_dir, &update_tx, &issue_id, &session_id).await;
                     run_after_run_hook(&shell_executor, &config.hooks, &ws_path);
                     emit_update(
                         &update_tx,
@@ -301,6 +325,7 @@ pub async fn run_agent_attempt(
                     let error_message = "turn cancelled".to_string();
                     warn!(%turn_id, "turn cancelled");
                     let _ = client.stop().await;
+                    emit_log_token_usage(&session_log_dir, &update_tx, &issue_id, &session_id).await;
                     run_after_run_hook(&shell_executor, &config.hooks, &ws_path);
                     emit_update(
                         &update_tx,
@@ -313,6 +338,7 @@ pub async fn run_agent_attempt(
                     let error_message = format!("turn error: {e}");
                     error!(error = %e, "turn error");
                     let _ = client.stop().await;
+                    emit_log_token_usage(&session_log_dir, &update_tx, &issue_id, &session_id).await;
                     run_after_run_hook(&shell_executor, &config.hooks, &ws_path);
                     emit_update(
                         &update_tx,
@@ -332,6 +358,11 @@ pub async fn run_agent_attempt(
         }
 
         let _ = client.stop().await;
+
+        // Scan Copilot log files for token usage metrics that aren't
+        // available over ACP in Copilot CLI 1.0.5.
+        emit_log_token_usage(&session_log_dir, &update_tx, &issue_id, &session_id).await;
+
         run_after_run_hook(&shell_executor, &config.hooks, &ws_path);
 
         info!(turns_max = max_turns, "agent run completed");
@@ -397,5 +428,42 @@ async fn emit_update(update_tx: &mpsc::Sender<AgentUpdate>, update: AgentUpdate)
             error = %e,
             "agent update receiver dropped"
         );
+    }
+}
+
+/// Best-effort scan of Copilot log directory for token usage metrics.
+/// Emits an `AgentUpdate` if any tokens are found. Safe to call when
+/// `session_log_dir` is `None` (no-op).
+async fn emit_log_token_usage(
+    session_log_dir: &Option<std::path::PathBuf>,
+    update_tx: &mpsc::Sender<AgentUpdate>,
+    issue_id: &str,
+    session_id: &str,
+) {
+    if let Some(ref log_dir) = session_log_dir {
+        let usage = log_parser::scan_log_dir(log_dir).await;
+        if usage.total_tokens > 0 || usage.prompt_tokens > 0 {
+            info!(
+                prompt = usage.prompt_tokens,
+                completion = usage.completion_tokens,
+                total = usage.total_tokens,
+                "token usage from log files"
+            );
+            emit_update(
+                update_tx,
+                AgentUpdate {
+                    issue_id: issue_id.to_string(),
+                    event: "token_usage".to_string(),
+                    message: Some("from log files".to_string()),
+                    input_tokens: Some(usage.prompt_tokens),
+                    output_tokens: Some(usage.completion_tokens),
+                    total_tokens: Some(usage.total_tokens),
+                    session_id: Some(session_id.to_string()),
+                },
+            )
+            .await;
+        } else {
+            info!(log_dir = %log_dir.display(), "no token usage found in log files");
+        }
     }
 }
