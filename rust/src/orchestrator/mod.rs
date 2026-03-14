@@ -856,3 +856,238 @@ pub async fn run_orchestrator(
         "orchestrator stopped"
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tracker::Issue;
+
+    fn dummy_issue(issue_id: &str) -> Issue {
+        Issue {
+            id: issue_id.to_string(),
+            identifier: format!("rusty-{issue_id}"),
+            title: "test".into(),
+            description: None,
+            priority: None,
+            state: "open".into(),
+            labels: vec![],
+            url: None,
+            blocked_by: vec![],
+            branch_name: None,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    // Tests need tokio runtime for AbortHandle creation
+    #[tokio::test]
+    async fn turn_completed_event_increments_count() {
+        let mut state = OrchestratorState::new(5000, 10);
+        let handle = tokio::task::spawn(async {});
+        state.running.insert("42".into(), RunningEntry {
+            issue_id: "42".into(),
+            identifier: "rusty-42".into(),
+            issue: dummy_issue("42"),
+            session_id: Some("sess-1".into()),
+            last_event: None,
+            last_event_at: None,
+            last_message: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            last_reported_input: 0,
+            last_reported_output: 0,
+            last_reported_total: 0,
+            turn_count: 0,
+            retry_attempt: None,
+            started_at: Utc::now(),
+            worker_handle: handle.abort_handle(),
+        });
+
+        apply_agent_update_to_state(
+            &mut state, "42", "turn_completed".into(),
+            Some("turn 1 completed".into()), None, None, None, None,
+        );
+
+        let entry = state.running.get("42").unwrap();
+        assert_eq!(entry.turn_count, 1);
+        assert_eq!(entry.last_event.as_deref(), Some("turn_completed"));
+    }
+
+    #[tokio::test]
+    async fn completed_event_increments_count() {
+        let mut state = OrchestratorState::new(5000, 10);
+        let handle = tokio::task::spawn(async {});
+        state.running.insert("42".into(), RunningEntry {
+            issue_id: "42".into(),
+            identifier: "rusty-42".into(),
+            issue: dummy_issue("42"),
+            session_id: None,
+            last_event: None,
+            last_event_at: None,
+            last_message: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            last_reported_input: 0,
+            last_reported_output: 0,
+            last_reported_total: 0,
+            turn_count: 0,
+            retry_attempt: None,
+            started_at: Utc::now(),
+            worker_handle: handle.abort_handle(),
+        });
+
+        apply_agent_update_to_state(
+            &mut state, "42", "completed".into(), None, None, None, None, None,
+        );
+
+        assert_eq!(state.running.get("42").unwrap().turn_count, 1);
+    }
+
+    #[tokio::test]
+    async fn notification_event_does_not_increment_count() {
+        let mut state = OrchestratorState::new(5000, 10);
+        let handle = tokio::task::spawn(async {});
+        state.running.insert("42".into(), RunningEntry {
+            issue_id: "42".into(),
+            identifier: "rusty-42".into(),
+            issue: dummy_issue("42"),
+            session_id: None,
+            last_event: None,
+            last_event_at: None,
+            last_message: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            last_reported_input: 0,
+            last_reported_output: 0,
+            last_reported_total: 0,
+            turn_count: 0,
+            retry_attempt: None,
+            started_at: Utc::now(),
+            worker_handle: handle.abort_handle(),
+        });
+
+        apply_agent_update_to_state(
+            &mut state, "42", "notification".into(),
+            Some("session update".into()), None, None, None, None,
+        );
+
+        let entry = state.running.get("42").unwrap();
+        assert_eq!(entry.turn_count, 0);
+        assert_eq!(entry.last_event.as_deref(), Some("notification"));
+    }
+
+    #[tokio::test]
+    async fn token_usage_updates_totals() {
+        let mut state = OrchestratorState::new(5000, 10);
+        let handle = tokio::task::spawn(async {});
+        state.running.insert("42".into(), RunningEntry {
+            issue_id: "42".into(),
+            identifier: "rusty-42".into(),
+            issue: dummy_issue("42"),
+            session_id: None,
+            last_event: None,
+            last_event_at: None,
+            last_message: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            last_reported_input: 0,
+            last_reported_output: 0,
+            last_reported_total: 0,
+            turn_count: 0,
+            retry_attempt: None,
+            started_at: Utc::now(),
+            worker_handle: handle.abort_handle(),
+        });
+
+        apply_agent_update_to_state(
+            &mut state, "42", "token_usage".into(),
+            None, Some(100), Some(200), Some(300), None,
+        );
+
+        let entry = state.running.get("42").unwrap();
+        assert_eq!(entry.input_tokens, 100);
+        assert_eq!(entry.output_tokens, 200);
+        assert_eq!(entry.total_tokens, 300);
+        assert_eq!(state.agent_totals.total_tokens, 300);
+    }
+
+    #[tokio::test]
+    async fn session_id_updated_on_event() {
+        let mut state = OrchestratorState::new(5000, 10);
+        let handle = tokio::task::spawn(async {});
+        state.running.insert("42".into(), RunningEntry {
+            issue_id: "42".into(),
+            identifier: "rusty-42".into(),
+            issue: dummy_issue("42"),
+            session_id: None,
+            last_event: None,
+            last_event_at: None,
+            last_message: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            last_reported_input: 0,
+            last_reported_output: 0,
+            last_reported_total: 0,
+            turn_count: 0,
+            retry_attempt: None,
+            started_at: Utc::now(),
+            worker_handle: handle.abort_handle(),
+        });
+
+        apply_agent_update_to_state(
+            &mut state, "42", "session_started".into(),
+            Some("session abc".into()), None, None, None, Some("abc-123".into()),
+        );
+
+        assert_eq!(state.running.get("42").unwrap().session_id.as_deref(), Some("abc-123"));
+    }
+
+    #[tokio::test]
+    async fn multiple_turns_accumulate() {
+        let mut state = OrchestratorState::new(5000, 10);
+        let handle = tokio::task::spawn(async {});
+        state.running.insert("42".into(), RunningEntry {
+            issue_id: "42".into(),
+            identifier: "rusty-42".into(),
+            issue: dummy_issue("42"),
+            session_id: None,
+            last_event: None,
+            last_event_at: None,
+            last_message: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            last_reported_input: 0,
+            last_reported_output: 0,
+            last_reported_total: 0,
+            turn_count: 0,
+            retry_attempt: None,
+            started_at: Utc::now(),
+            worker_handle: handle.abort_handle(),
+        });
+
+        for i in 1..=5 {
+            apply_agent_update_to_state(
+                &mut state, "42", "turn_completed".into(),
+                Some(format!("turn {i} completed")), None, None, None, None,
+            );
+        }
+
+        assert_eq!(state.running.get("42").unwrap().turn_count, 5);
+    }
+
+    #[test]
+    fn unknown_issue_id_is_noop() {
+        let mut state = OrchestratorState::new(5000, 10);
+        // Should not panic
+        apply_agent_update_to_state(
+            &mut state, "nonexistent", "turn_completed".into(),
+            None, None, None, None, None,
+        );
+    }
+}
