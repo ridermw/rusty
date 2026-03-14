@@ -373,6 +373,122 @@ fn apply_agent_update_to_state(
     }
 }
 
+/// Update a GitHub Project item's status field.
+/// Shells out to `gh project item-list` to find the item, then `gh project item-edit` to update.
+async fn update_project_status(
+    owner: &str,
+    project_number: u32,
+    issue_number: &str,
+    status_name: &str,
+) {
+    // Status option IDs (from project field config)
+    let option_id = match status_name {
+        "Backlog" => "f75ad846",
+        "Todo" => "61e4505c",
+        "InProgress" => "47fc9ee4",
+        "HumanReview" => "df73e18b",
+        "Merging" => "37ec4a6e",
+        "Rework" => "84ea7dca",
+        "Done" => "98236657",
+        _ => {
+            tracing::warn!(status_name, "unknown project status, skipping update");
+            return;
+        }
+    };
+
+    // Find the project item ID for this issue
+    let list_output = tokio::process::Command::new("gh")
+        .args([
+            "project",
+            "item-list",
+            &project_number.to_string(),
+            "--owner",
+            owner,
+            "--format",
+            "json",
+            "--limit",
+            "200",
+        ])
+        .output()
+        .await;
+
+    let item_id = match list_output {
+        Ok(output) if output.status.success() => {
+            let json: serde_json::Value = match serde_json::from_slice(&output.stdout) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to parse project items");
+                    return;
+                }
+            };
+            json.get("items")
+                .and_then(|items| items.as_array())
+                .and_then(|items| {
+                    items.iter().find(|item| {
+                        item.get("content")
+                            .and_then(|c| c.get("number"))
+                            .and_then(|n| n.as_u64())
+                            .map(|n| n.to_string())
+                            == Some(issue_number.to_string())
+                    })
+                })
+                .and_then(|item| item.get("id").and_then(|id| id.as_str()))
+                .map(|s| s.to_string())
+        }
+        _ => {
+            tracing::warn!(
+                issue_number,
+                "failed to list project items for status update"
+            );
+            return;
+        }
+    };
+
+    let item_id = match item_id {
+        Some(id) => id,
+        None => {
+            tracing::debug!(
+                issue_number,
+                "issue not found in project, skipping status update"
+            );
+            return;
+        }
+    };
+
+    // Update the status
+    let project_id = "PVT_kwHOAFl5zs4BRqBN"; // TODO: read from config
+    let field_id = "PVTSSF_lAHOAFl5zs4BRqBNzg_a8jM"; // TODO: read from config
+
+    let result = tokio::process::Command::new("gh")
+        .args([
+            "project",
+            "item-edit",
+            "--project-id",
+            project_id,
+            "--id",
+            &item_id,
+            "--field-id",
+            field_id,
+            "--single-select-option-id",
+            option_id,
+        ])
+        .output()
+        .await;
+
+    match result {
+        Ok(output) if output.status.success() => {
+            tracing::info!(issue_number, status_name, "project status updated");
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(issue_number, status_name, %stderr, "project status update failed");
+        }
+        Err(e) => {
+            tracing::warn!(issue_number, status_name, error = %e, "project status update failed");
+        }
+    }
+}
+
 fn cleanup_workspace_for_issue(
     config: &RustyConfig,
     workspace_root: &Path,
@@ -534,6 +650,16 @@ pub async fn run_orchestrator(
                             state.claimed.insert(issue_id.clone());
 
                             tracing::info!(%issue_id, %identifier, attempt = ?retry_attempt, "dispatching issue");
+
+                            // Update project status to InProgress on dispatch
+                            if config.tracker.project_number.unwrap_or(0) > 0 {
+                                let owner = config.tracker.owner.clone().unwrap_or_default();
+                                let proj_num = config.tracker.project_number.unwrap_or(0);
+                                let issue_num = issue_id.clone();
+                                tokio::spawn(async move {
+                                    update_project_status(&owner, proj_num, &issue_num, "InProgress").await;
+                                });
+                            }
 
                             let dispatch_config = config.clone();
                             let dispatch_prompt = workflow_prompt.clone();
