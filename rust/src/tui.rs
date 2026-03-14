@@ -558,7 +558,7 @@ fn section_block<'a>(title: &'a str, focused: bool) -> Block<'a> {
 }
 
 fn running_row(index: usize, running: &RunningSnapshot) -> Row<'static> {
-    let row_bg = if index % 2 == 0 { PANEL_BG } else { BG };
+    let row_bg = if index.is_multiple_of(2) { PANEL_BG } else { BG };
     let update = humanize_update(
         running.last_event.as_deref(),
         running.last_message.as_deref(),
@@ -575,7 +575,7 @@ fn running_row(index: usize, running: &RunningSnapshot) -> Row<'static> {
 }
 
 fn retry_row(index: usize, retry: &RetrySnapshot) -> Row<'static> {
-    let row_bg = if index % 2 == 0 { PANEL_BG } else { BG };
+    let row_bg = if index.is_multiple_of(2) { PANEL_BG } else { BG };
 
     Row::new(vec![
         Cell::from(truncate_with_ellipsis(&retry.identifier, 12)),
