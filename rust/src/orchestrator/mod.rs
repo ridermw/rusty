@@ -605,10 +605,20 @@ pub async fn run_orchestrator(
                                     }
                                     ReconcileAction::UpdateState(issue_id, issue) => {
                                         if let Some(entry) = state.running.get_mut(&issue_id) {
-                                            if entry.issue.state != issue.state {
+                                            // When project tracking is enabled, REST returns
+                                            // "open"/"closed" (not project status like "InProgress").
+                                            // Preserve the project-derived state from dispatch;
+                                            // only update non-state fields (title, labels, etc.).
+                                            let preserve_state = config.tracker.project_number.unwrap_or(0) > 0;
+                                            let preserved = entry.issue.state.clone();
+
+                                            if !preserve_state && entry.issue.state != issue.state {
                                                 state.completed_counts.remove(&issue_id);
                                             }
                                             entry.issue = *issue;
+                                            if preserve_state {
+                                                entry.issue.state = preserved;
+                                            }
                                         }
                                     }
                                 }
