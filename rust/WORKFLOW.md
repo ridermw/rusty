@@ -3,6 +3,7 @@ tracker:
   kind: github
   owner: "ridermw"
   repo: "rusty"
+  project_number: 5
   active_issue_labels:
     - "Todo"
     - "InProgress"
