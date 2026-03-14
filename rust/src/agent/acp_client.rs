@@ -410,8 +410,8 @@ impl AcpClient {
             loop {
                 match self.read_message().await? {
                     Some(msg) => {
-                        // Log every ACP message at INFO for protocol debugging
-                        info!(
+                        // Debug log raw messages; key events logged at INFO below
+                        debug!(
                             id = ?msg.id,
                             method = ?msg.method,
                             has_result = msg.result.is_some(),
@@ -501,7 +501,7 @@ impl AcpClient {
                                     continue;
                                 }
                                 _ => {
-                                    info!(%request_id, %method, "unknown server request, responding empty");
+                                    debug!(%request_id, %method, "unknown server request, responding empty");
                                     let _ = self
                                         .send_response(request_id, serde_json::json!({}))
                                         .await;
