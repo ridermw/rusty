@@ -4,6 +4,8 @@ use self::schema::RustyConfig;
 use std::{collections::HashMap, env, path::PathBuf};
 use thiserror::Error;
 
+use crate::ports::{ProcessRunner, TokioProcessRunner};
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("missing workflow file: {0}")]
@@ -44,6 +46,14 @@ pub fn resolve_env_value(value: &str) -> Result<String, ConfigError> {
 ///
 /// Returns the token string or an error if no source provides one.
 pub async fn resolve_github_token(config_value: Option<&str>) -> Result<String, ConfigError> {
+    resolve_github_token_with(config_value, &TokioProcessRunner).await
+}
+
+/// Same as [`resolve_github_token`] but accepts an injectable [`ProcessRunner`].
+pub async fn resolve_github_token_with(
+    config_value: Option<&str>,
+    process: &dyn ProcessRunner,
+) -> Result<String, ConfigError> {
     match config_value {
         Some(val) if !val.is_empty() && !val.starts_with('$') => return Ok(val.to_string()),
         Some(val) if !val.is_empty() && val != "$GITHUB_TOKEN" && val != "$GH_TOKEN" => {
@@ -64,12 +74,8 @@ pub async fn resolve_github_token(config_value: Option<&str>) -> Result<String, 
         }
     }
 
-    match tokio::process::Command::new("gh")
-        .args(["auth", "token"])
-        .output()
-        .await
-    {
-        Ok(output) if output.status.success() => {
+    match process.run("gh", &["auth", "token"]).await {
+        Ok(output) if output.status_success => {
             let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !token.is_empty() {
                 return Ok(token);

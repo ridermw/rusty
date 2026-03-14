@@ -2,14 +2,14 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use chrono::{DateTime, Utc};
-use reqwest::Client;
 use tracing::{debug, warn};
 
 use crate::config::schema::TrackerConfig;
+use crate::ports::{HttpClient, ReqwestHttpClient};
 use crate::tracker::{Issue, TrackerError};
 
-pub struct GitHubClient {
-    http: Client,
+pub struct GitHubClient<H: HttpClient = ReqwestHttpClient> {
+    http: H,
     etag_cache: RwLock<HashMap<String, String>>,
     /// Cached issue payloads from last successful fetch, keyed by base URL+state.
     /// Used to return previous results on 304 Not Modified responses.
@@ -19,7 +19,17 @@ pub struct GitHubClient {
 impl GitHubClient {
     pub fn new() -> Self {
         Self {
-            http: Client::new(),
+            http: ReqwestHttpClient::new(),
+            etag_cache: RwLock::new(HashMap::new()),
+            response_cache: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+impl<H: HttpClient> GitHubClient<H> {
+    pub fn with_http(http: H) -> Self {
+        Self {
+            http,
             etag_cache: RwLock::new(HashMap::new()),
             response_cache: RwLock::new(HashMap::new()),
         }
@@ -62,6 +72,7 @@ impl GitHubClient {
         let cache_key = format!("{base_url}?state={state}");
         let mut all_issues = Vec::new();
         let mut page = 1_u32;
+        let bearer = format!("Bearer {token}");
 
         loop {
             let mut url = format!("{base_url}?state={state}&per_page=50&page={page}");
@@ -71,47 +82,42 @@ impl GitHubClient {
 
             debug!(%url, page, "fetching GitHub issues page");
 
-            let mut request = self
-                .http
-                .get(&url)
-                .header("Authorization", format!("Bearer {token}"))
-                .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "rusty/0.1");
+            let mut headers = vec![
+                ("Authorization", bearer.as_str()),
+                ("Accept", "application/vnd.github+json"),
+                ("User-Agent", "rusty/0.1"),
+            ];
 
-            if let Some(etag) = self.etag_cache.read().unwrap().get(&url).cloned() {
-                request = request.header("If-None-Match", etag);
+            let etag_value = self.etag_cache.read().unwrap().get(&url).cloned();
+            if let Some(ref etag) = etag_value {
+                headers.push(("If-None-Match", etag.as_str()));
             }
 
-            let response = request
-                .send()
+            let response = self
+                .http
+                .get(&url, &headers)
                 .await
                 .map_err(|err| TrackerError::ApiRequest(err.to_string()))?;
-            let status = response.status().as_u16();
+            let status = response.status;
 
-            if let Some(etag) = response.headers().get("etag") {
-                if let Ok(etag_str) = etag.to_str() {
-                    self.etag_cache
-                        .write()
-                        .unwrap()
-                        .insert(url.clone(), etag_str.to_string());
-                }
+            if let Some(etag_str) = response.header("etag") {
+                self.etag_cache
+                    .write()
+                    .unwrap()
+                    .insert(url.clone(), etag_str.to_string());
             }
 
             match status {
                 304 => {
                     debug!(%url, "GitHub API returned 304 Not Modified");
-                    // Return cached response from last successful fetch
                     if let Some(cached) = self.response_cache.read().unwrap().get(&cache_key) {
                         return Ok(cached.clone());
                     }
-                    // No cache available (shouldn't happen, but safe fallback)
                     break;
                 }
                 429 => {
                     let reset_at = response
-                        .headers()
-                        .get("x-ratelimit-reset")
-                        .and_then(|value| value.to_str().ok())
+                        .header("x-ratelimit-reset")
                         .and_then(|value| value.parse::<i64>().ok())
                         .and_then(|timestamp| DateTime::<Utc>::from_timestamp(timestamp, 0))
                         .unwrap_or_else(Utc::now);
@@ -120,14 +126,13 @@ impl GitHubClient {
                 }
                 200 => {}
                 _ => {
-                    let body = response.text().await.unwrap_or_default();
+                    let body = response.text();
                     return Err(TrackerError::ApiStatus(status, body));
                 }
             }
 
             let items: Vec<serde_json::Value> = response
                 .json()
-                .await
                 .map_err(|err| TrackerError::UnknownPayload(err.to_string()))?;
 
             if items.is_empty() {
@@ -170,25 +175,26 @@ impl GitHubClient {
             .trim_end_matches('/');
         let repo_name = Self::repo_name(config);
         let mut issues = Vec::new();
+        let bearer = format!("Bearer {token}");
 
         for &number in numbers {
             let url = format!("{endpoint}/repos/{repo}/issues/{number}");
+            let headers = [
+                ("Authorization", bearer.as_str()),
+                ("Accept", "application/vnd.github+json"),
+                ("User-Agent", "rusty/0.1"),
+            ];
             let response = self
                 .http
-                .get(&url)
-                .header("Authorization", format!("Bearer {token}"))
-                .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "rusty/0.1")
-                .send()
+                .get(&url, &headers)
                 .await
                 .map_err(|err| TrackerError::ApiRequest(err.to_string()))?;
 
-            let status = response.status().as_u16();
+            let status = response.status;
             match status {
                 200 => {
                     let item: serde_json::Value = response
                         .json()
-                        .await
                         .map_err(|err| TrackerError::UnknownPayload(err.to_string()))?;
                     if let Some(issue) = normalize_github_issue(&item, &repo_name, config) {
                         issues.push(issue);
@@ -196,9 +202,7 @@ impl GitHubClient {
                 }
                 429 => {
                     let reset_at = response
-                        .headers()
-                        .get("x-ratelimit-reset")
-                        .and_then(|value| value.to_str().ok())
+                        .header("x-ratelimit-reset")
                         .and_then(|value| value.parse::<i64>().ok())
                         .and_then(|timestamp| DateTime::<Utc>::from_timestamp(timestamp, 0))
                         .unwrap_or_else(Utc::now);
