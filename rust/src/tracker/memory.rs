@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
@@ -8,12 +9,14 @@ use crate::config::schema::TrackerConfig;
 #[derive(Debug, Clone)]
 pub struct MemoryTracker {
     issues: Arc<RwLock<Vec<Issue>>>,
+    sessions: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl MemoryTracker {
     pub fn new(issues: Vec<Issue>) -> Self {
         Self {
             issues: Arc::new(RwLock::new(issues)),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -110,6 +113,27 @@ impl Tracker for MemoryTracker {
             .filter(|issue| normalized.contains(&issue.state.to_lowercase()))
             .cloned()
             .collect())
+    }
+
+    async fn save_session_id(
+        &self,
+        issue_id: &str,
+        session_id: &str,
+    ) -> Result<(), TrackerError> {
+        self.sessions
+            .write()
+            .unwrap()
+            .insert(issue_id.to_string(), session_id.to_string());
+        Ok(())
+    }
+
+    async fn load_session_id(&self, issue_id: &str) -> Result<Option<String>, TrackerError> {
+        Ok(self.sessions.read().unwrap().get(issue_id).cloned())
+    }
+
+    async fn delete_session_id(&self, issue_id: &str) -> Result<(), TrackerError> {
+        self.sessions.write().unwrap().remove(issue_id);
+        Ok(())
     }
 }
 

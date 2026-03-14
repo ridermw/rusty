@@ -7,6 +7,7 @@ pub mod orchestrator;
 pub mod ports;
 pub mod prompt;
 pub mod server;
+pub mod session;
 pub mod tracker;
 pub mod tui;
 pub mod workflow;
