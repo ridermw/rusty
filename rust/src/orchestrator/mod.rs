@@ -693,6 +693,10 @@ pub async fn run_orchestrator(
                         tracing::info!(count = candidates.len(), "fetched candidate issues");
 
                         let candidate_ids: HashSet<String> = candidates.iter().map(|issue| issue.id.clone()).collect();
+                        // If a previously-completed issue reappears as a candidate
+                        // (e.g. user moved it back to InProgress), clear it from
+                        // the completed set so it can be re-dispatched.
+                        state.completed.retain(|id| !candidate_ids.contains(id));
                         state.retry_attempts.retain(|issue_id, _| {
                             state.claimed.contains(issue_id) || candidate_ids.contains(issue_id)
                         });
