@@ -310,6 +310,19 @@ pub fn next_attempt(current: Option<u32>, is_normal_exit: bool) -> u32 {
 }
 
 /// Build a snapshot from current state.
+/// Sanitize a URL to only allow `http` and `https` schemes.
+/// Returns `None` for dangerous schemes (e.g. `javascript:`, `data:`).
+pub fn sanitize_url(url: &Option<String>) -> Option<String> {
+    url.as_ref().and_then(|u| {
+        let trimmed = u.trim();
+        if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
+            Some(trimmed.to_string())
+        } else {
+            None
+        }
+    })
+}
+
 pub fn build_snapshot(state: &OrchestratorState) -> OrchestratorSnapshot {
     let running: Vec<RunningSnapshot> = state
         .running
@@ -326,7 +339,7 @@ pub fn build_snapshot(state: &OrchestratorState) -> OrchestratorSnapshot {
             input_tokens: entry.input_tokens,
             output_tokens: entry.output_tokens,
             total_tokens: entry.total_tokens,
-            issue_url: entry.issue.url.clone(),
+            issue_url: sanitize_url(&entry.issue.url),
         })
         .collect();
 
@@ -339,7 +352,7 @@ pub fn build_snapshot(state: &OrchestratorState) -> OrchestratorSnapshot {
             attempt: entry.attempt,
             due_at: entry.due_at.to_rfc3339(),
             error: entry.error.clone(),
-            issue_url: entry.issue_url.clone(),
+            issue_url: sanitize_url(&entry.issue_url),
         })
         .collect();
 

@@ -22,23 +22,36 @@ a:hover { text-decoration: underline; }
 <p>Live via SSE. JSON: <a href="/api/v1/state">/api/v1/state</a></p>
 <div id="state">Loading...</div>
 <script>
+function esc(s) {
+  if (s == null) return '';
+  var d = document.createElement('div');
+  d.appendChild(document.createTextNode(String(s)));
+  return d.innerHTML;
+}
+function safeHref(url) {
+  if (!url) return null;
+  var u = String(url).trim();
+  if (u.indexOf('https://') === 0 || u.indexOf('http://') === 0) return u;
+  return null;
+}
 function issueCell(identifier, url) {
-  if (url) return '<a href="' + url + '" target="_blank" rel="noopener">' + identifier + '</a>';
-  return identifier;
+  var safe = safeHref(url);
+  if (safe) return '<a href="' + esc(safe) + '" target="_blank" rel="noopener noreferrer">' + esc(identifier) + '</a>';
+  return esc(identifier);
 }
 function renderState(d) {
-  let h = '<p>Running: ' + d.counts.running + ' | Retrying: ' + d.counts.retrying + '</p>';
+  let h = '<p>Running: ' + esc(d.counts.running) + ' | Retrying: ' + esc(d.counts.retrying) + '</p>';
   if (d.running.length) {
     h += '<h2>Running</h2><table><tr><th>Issue</th><th>State</th><th>Turns</th><th>Tokens</th></tr>';
     d.running.forEach(function(r) {
-      h += '<tr><td>' + issueCell(r.identifier, r.issue_url) + '</td><td>' + r.state + '</td><td>' + r.turn_count + '</td><td>' + r.total_tokens + '</td></tr>';
+      h += '<tr><td>' + issueCell(r.identifier, r.issue_url) + '</td><td>' + esc(r.state) + '</td><td>' + esc(r.turn_count) + '</td><td>' + esc(r.total_tokens) + '</td></tr>';
     });
     h += '</table>';
   }
   if (d.retrying && d.retrying.length) {
     h += '<h2>Retry Queue</h2><table><tr><th>Issue</th><th>Attempt</th><th>Due</th><th>Error</th></tr>';
     d.retrying.forEach(function(r) {
-      h += '<tr><td>' + issueCell(r.identifier, r.issue_url) + '</td><td>' + r.attempt + '</td><td>' + r.due_at + '</td><td>' + (r.error || '-') + '</td></tr>';
+      h += '<tr><td>' + issueCell(r.identifier, r.issue_url) + '</td><td>' + esc(r.attempt) + '</td><td>' + esc(r.due_at) + '</td><td>' + esc(r.error || '-') + '</td></tr>';
     });
     h += '</table>';
   }

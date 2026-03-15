@@ -705,3 +705,99 @@ fn max_failure_retries_is_reasonable_value() {
     // Must not be excessively high (sanity bound)
     assert!(MAX_FAILURE_RETRIES <= 100);
 }
+
+#[test]
+fn sanitize_url_allows_https() {
+    use rusty::orchestrator::sanitize_url;
+    let url = Some("https://github.com/example/issues/1".into());
+    assert_eq!(
+        sanitize_url(&url),
+        Some("https://github.com/example/issues/1".into())
+    );
+}
+
+#[test]
+fn sanitize_url_allows_http() {
+    use rusty::orchestrator::sanitize_url;
+    let url = Some("http://example.com/issues/1".into());
+    assert_eq!(
+        sanitize_url(&url),
+        Some("http://example.com/issues/1".into())
+    );
+}
+
+#[test]
+fn sanitize_url_rejects_javascript_scheme() {
+    use rusty::orchestrator::sanitize_url;
+    let url = Some("javascript:alert(1)".into());
+    assert_eq!(sanitize_url(&url), None);
+}
+
+#[test]
+fn sanitize_url_rejects_data_scheme() {
+    use rusty::orchestrator::sanitize_url;
+    let url = Some("data:text/html,<script>alert(1)</script>".into());
+    assert_eq!(sanitize_url(&url), None);
+}
+
+#[test]
+fn sanitize_url_returns_none_for_none() {
+    use rusty::orchestrator::sanitize_url;
+    assert_eq!(sanitize_url(&None), None);
+}
+
+#[test]
+fn sanitize_url_trims_whitespace() {
+    use rusty::orchestrator::sanitize_url;
+    let url = Some("  https://github.com/test  ".into());
+    assert_eq!(
+        sanitize_url(&url),
+        Some("https://github.com/test".into())
+    );
+}
+
+#[test]
+fn build_snapshot_neutralizes_javascript_issue_url() {
+    let issue = Issue {
+        id: "1".into(),
+        identifier: "XSS-1".into(),
+        title: "test".into(),
+        description: None,
+        priority: None,
+        state: "open".into(),
+        branch_name: None,
+        url: Some("javascript:alert(document.cookie)".into()),
+        labels: vec![],
+        blocked_by: vec![],
+        created_at: None,
+        updated_at: None,
+    };
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let worker = rt.block_on(async { tokio::spawn(async {}).abort_handle() });
+    let mut state = OrchestratorState::new(1_000, 2);
+    state.running.insert(
+        issue.id.clone(),
+        RunningEntry {
+            issue_id: issue.id.clone(),
+            identifier: issue.identifier.clone(),
+            issue,
+            session_id: None,
+            last_event: None,
+            last_event_at: None,
+            last_message: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            last_reported_input: 0,
+            last_reported_output: 0,
+            last_reported_total: 0,
+            turn_count: 0,
+            retry_attempt: None,
+            started_at: Utc::now(),
+            worker_handle: worker,
+        },
+    );
+
+    let snapshot = build_snapshot(&state);
+    assert_eq!(snapshot.running[0].issue_url, None);
+}
