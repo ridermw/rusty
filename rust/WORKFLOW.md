@@ -43,7 +43,7 @@ hooks:
   before_remove: |
     echo "workspace cleanup"
 agent:
-  max_concurrent_agents: 10
+  max_concurrent_agents: 3
   max_turns: 20
 copilot:
   command: copilot
