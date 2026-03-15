@@ -194,7 +194,7 @@ async fn get_root_returns_200_html() {
         .await
         .expect("body bytes");
     let html = String::from_utf8(bytes.to_vec()).expect("utf8 html");
-    assert!(html.contains("<h1>Rusty Dashboard</h1>"));
+    assert!(html.contains("Operations Dashboard"));
     assert!(html.contains("/api/v1/state"));
 }
 
