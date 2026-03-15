@@ -200,6 +200,60 @@ async fn get_root_returns_200_html() {
 }
 
 #[tokio::test]
+async fn dashboard_html_escapes_dynamic_content_to_prevent_xss() {
+    let app = test_app(make_snapshot());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body bytes");
+    let html = String::from_utf8(bytes.to_vec()).expect("utf8 html");
+
+    // Dashboard must define an HTML-escape helper
+    assert!(
+        html.contains("function esc("),
+        "dashboard must define an esc() function for HTML escaping"
+    );
+
+    // The escape function must handle angle brackets and ampersands
+    assert!(
+        html.contains("&amp;") && html.contains("&lt;") && html.contains("&gt;"),
+        "esc() must replace &, <, > with HTML entities"
+    );
+
+    // All dynamic interpolations in table rows must go through esc()
+    assert!(
+        html.contains("${esc(r.identifier)}"),
+        "identifier must be escaped"
+    );
+    assert!(
+        html.contains("${esc(r.state)}"),
+        "state must be escaped"
+    );
+    assert!(
+        html.contains("${esc(event)}"),
+        "event text must be escaped"
+    );
+    assert!(
+        html.contains("${esc(session)}"),
+        "session must be escaped"
+    );
+    assert!(
+        html.contains("${esc(pid)}"),
+        "pid must be escaped"
+    );
+}
+
+#[tokio::test]
 async fn fallback_returns_error_envelope_shape() {
     let app = test_app(make_snapshot());
 

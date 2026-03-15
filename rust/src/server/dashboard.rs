@@ -32,9 +32,13 @@ function truncSession(sid){
   return sid.slice(0,4)+'...'+sid.slice(-6);
 }
 function fmtTokens(n){return n.toLocaleString();}
+function esc(s){
+  if(s==null)return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
 function refresh(){
   fetch('/api/v1/state').then(r=>r.json()).then(d=>{
-    let h=`<p>Running: ${d.counts.running} | Retrying: ${d.counts.retrying}</p>`;
+    let h=`<p>Running: ${esc(d.counts.running)} | Retrying: ${esc(d.counts.retrying)}</p>`;
     if(d.running.length){
       h+=`<h2>Running</h2><table><tr><th>Issue</th><th>State</th><th>PID</th><th>Age / Turn</th><th>Tokens</th><th>Session</th><th>Event</th></tr>`;
       d.running.forEach(r=>{
@@ -42,7 +46,7 @@ function refresh(){
         const age=formatAge(r.started_at);
         const session=truncSession(r.session_id);
         const event=r.last_message||r.last_event||'-';
-        h+=`<tr><td>${r.identifier}</td><td>${r.state}</td><td>${pid}</td><td>${age} / ${r.turn_count}</td><td>${fmtTokens(r.total_tokens)}</td><td>${session}</td><td class="event">${event}</td></tr>`;
+        h+=`<tr><td>${esc(r.identifier)}</td><td>${esc(r.state)}</td><td>${esc(pid)}</td><td>${esc(age)} / ${esc(r.turn_count)}</td><td>${fmtTokens(r.total_tokens)}</td><td>${esc(session)}</td><td class="event">${esc(event)}</td></tr>`;
       });
       h+=`</table>`;
     }
