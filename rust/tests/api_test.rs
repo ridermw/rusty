@@ -4,8 +4,11 @@ use axum::{
 };
 use chrono::{TimeZone, Utc};
 use rusty::orchestrator::state::{OrchestratorState, RunningEntry, TokenTotals};
-use rusty::orchestrator::{build_snapshot, OrchestratorMsg, OrchestratorSnapshot};
+use rusty::orchestrator::{
+    build_snapshot, OrchestratorMsg, OrchestratorSnapshot, RunningSnapshot,
+};
 use rusty::server::api::build_router;
+use rusty::server::dashboard::render_html_dashboard;
 use rusty::tracker::Issue;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -228,4 +231,123 @@ async fn fallback_returns_error_envelope_shape() {
             }
         })
     );
+}
+
+// --- XSS regression tests ---
+
+#[test]
+fn web_dashboard_html_contains_xss_escape_functions() {
+    let html = render_html_dashboard();
+
+    // esc() must be defined for HTML entity escaping
+    assert!(
+        html.contains("function esc("),
+        "dashboard must define esc() for HTML escaping"
+    );
+    // safeUrl() must be defined for URL protocol validation
+    assert!(
+        html.contains("function safeUrl("),
+        "dashboard must define safeUrl() for URL validation"
+    );
+}
+
+#[test]
+fn web_dashboard_html_escapes_all_dynamic_values() {
+    let html = render_html_dashboard();
+
+    // Identifiers and state in the running table must go through esc()
+    assert!(
+        html.contains("esc(r.identifier)"),
+        "r.identifier must be escaped"
+    );
+    assert!(html.contains("esc(r.state)"), "r.state must be escaped");
+    assert!(
+        html.contains("esc(r.turn_count)"),
+        "r.turn_count must be escaped"
+    );
+
+    // Summary counts must be escaped
+    assert!(
+        html.contains("esc(d.counts.running)"),
+        "running count must be escaped"
+    );
+    assert!(
+        html.contains("esc(d.counts.retrying)"),
+        "retrying count must be escaped"
+    );
+    assert!(
+        html.contains("esc(d.max_agents"),
+        "max_agents must be escaped"
+    );
+
+    // Rate limits text must be escaped
+    assert!(html.contains("esc(rl)"), "rate limits must be escaped");
+
+    // project_url must be validated through safeUrl() before href assignment
+    assert!(
+        html.contains("safeUrl(d.project_url)"),
+        "project_url must be validated via safeUrl()"
+    );
+    // project_url display text must be escaped
+    assert!(
+        html.contains("esc(d.project_url)"),
+        "project_url display text must be escaped"
+    );
+
+    // Error handler must use textContent, not innerHTML
+    assert!(
+        html.contains(".textContent='Error loading state'"),
+        "error fallback must use textContent instead of innerHTML"
+    );
+}
+
+#[tokio::test]
+async fn api_state_with_xss_payload_in_identifier_returns_raw_html() {
+    // The API returns raw data and the dashboard JS must escape it.
+    // This verifies HTML payloads survive JSON encoding so the
+    // client-side esc() function can properly neutralise them.
+    let xss = "<img src=x onerror=alert(1)>";
+    let snapshot = OrchestratorSnapshot {
+        running_count: 1,
+        retrying_count: 0,
+        max_agents: 2,
+        throughput_tps: 0.0,
+        running: vec![RunningSnapshot {
+            issue_id: "1".into(),
+            identifier: xss.into(),
+            state: xss.into(),
+            session_id: None,
+            turn_count: 0,
+            last_event: None,
+            last_message: Some(xss.into()),
+            started_at: "2024-01-01T00:00:00Z".into(),
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+        }],
+        retrying: vec![],
+        agent_totals: TokenTotals::default(),
+        rate_limits: None,
+        project_url: Some("javascript:alert(1)".into()),
+        next_tick_at: None,
+    };
+
+    let app = test_app(snapshot);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/state")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+
+    // The XSS payload is preserved in JSON (not stripped) — the
+    // client-side esc() helper is responsible for neutralising it.
+    assert_eq!(json["running"][0]["identifier"], xss);
+    assert_eq!(json["running"][0]["state"], xss);
 }
