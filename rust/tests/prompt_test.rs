@@ -105,8 +105,7 @@ fn missing_attempt_variable_is_falsey_in_conditionals() {
 fn renders_none_description_as_empty_string() {
     let issue = test_issue("1", "ISSUE-1", "No desc issue", "open", None);
 
-    let rendered =
-        render_prompt("desc=[{{ issue.description }}]", &issue, None).unwrap();
+    let rendered = render_prompt("desc=[{{ issue.description }}]", &issue, None).unwrap();
 
     assert_eq!(rendered, "desc=[]");
 }
@@ -116,12 +115,8 @@ fn renders_special_characters_in_fields() {
     let mut issue = test_issue("1", "ISSUE-1", "Fix <html> & \"quotes\"", "open", None);
     issue.description = Some("Héllo wörld 🚀 foo&bar".to_string());
 
-    let rendered = render_prompt(
-        "{{ issue.title }} — {{ issue.description }}",
-        &issue,
-        None,
-    )
-    .unwrap();
+    let rendered =
+        render_prompt("{{ issue.title }} — {{ issue.description }}", &issue, None).unwrap();
 
     assert_eq!(rendered, "Fix <html> & \"quotes\" — Héllo wörld 🚀 foo&bar");
 }

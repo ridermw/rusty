@@ -6,9 +6,7 @@ use tracing::{info, warn};
 
 use super::client::GitHubClient;
 use crate::config::{resolve_github_token, schema::TrackerConfig};
-use crate::ports::{
-    HttpClient, ProcessRunner, ReqwestHttpClient, TokioProcessRunner,
-};
+use crate::ports::{HttpClient, ProcessRunner, ReqwestHttpClient, TokioProcessRunner};
 use crate::tracker::{Issue, Tracker, TrackerError};
 
 const INITIAL_GRAPHQL_BACKOFF_SECS: u64 = 60;
@@ -591,11 +589,7 @@ impl<H: HttpClient + Clone, P: ProcessRunner> Tracker for GitHubAdapter<H, P> {
             .collect())
     }
 
-    async fn save_session_id(
-        &self,
-        issue_id: &str,
-        session_id: &str,
-    ) -> Result<(), TrackerError> {
+    async fn save_session_id(&self, issue_id: &str, session_id: &str) -> Result<(), TrackerError> {
         let token = crate::config::resolve_github_token(self.config.api_key.as_deref())
             .await
             .map_err(|_| TrackerError::MissingApiKey)?;
@@ -630,10 +624,7 @@ impl<H: HttpClient + Clone, P: ProcessRunner> Tracker for GitHubAdapter<H, P> {
             .map_err(|err| TrackerError::ApiRequest(err.to_string()))?;
 
         if response.status != 201 {
-            return Err(TrackerError::ApiStatus(
-                response.status,
-                response.text(),
-            ));
+            return Err(TrackerError::ApiStatus(response.status, response.text()));
         }
 
         info!(
@@ -672,10 +663,7 @@ impl<H: HttpClient + Clone, P: ProcessRunner> Tracker for GitHubAdapter<H, P> {
             .map_err(|err| TrackerError::ApiRequest(err.to_string()))?;
 
         if response.status != 200 {
-            return Err(TrackerError::ApiStatus(
-                response.status,
-                response.text(),
-            ));
+            return Err(TrackerError::ApiStatus(response.status, response.text()));
         }
 
         let comments: Vec<serde_json::Value> = response
@@ -1107,7 +1095,10 @@ mod tests {
 
         assert!(result.is_some());
         let dt = result.unwrap();
-        assert_eq!(dt, DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap());
+        assert_eq!(
+            dt,
+            DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap()
+        );
     }
 
     #[test]

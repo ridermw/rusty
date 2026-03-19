@@ -52,8 +52,7 @@ impl SessionStore {
     }
 
     fn write_all(&self, records: &HashMap<String, SessionRecord>) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(records)
-            .map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(records).map_err(std::io::Error::other)?;
         std::fs::write(&self.path, json)
     }
 
