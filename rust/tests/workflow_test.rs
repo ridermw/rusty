@@ -105,12 +105,15 @@ fn parse_workflow_rejects_unclosed_front_matter() {
     let error = parse_workflow("---\ntracker:\n  kind: github\nprompt text\n")
         .expect_err("unclosed front matter should fail");
 
-    assert!(matches!(error, ConfigError::WorkflowParseError(msg) if msg.contains("no closing ---")));
+    assert!(
+        matches!(error, ConfigError::WorkflowParseError(msg) if msg.contains("no closing ---"))
+    );
 }
 
 #[test]
 fn parse_workflow_handles_empty_front_matter_section() {
-    let definition = parse_workflow("---\n---\nHello prompt\n").expect("empty front matter should parse");
+    let definition =
+        parse_workflow("---\n---\nHello prompt\n").expect("empty front matter should parse");
 
     assert_eq!(definition.config, empty_mapping());
     assert_eq!(definition.prompt_template, "Hello prompt");

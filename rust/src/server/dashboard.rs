@@ -191,7 +191,7 @@ a:hover{text-decoration:underline}
 
   function esc(s){
     if(s==null)return"";
-    var d=document.createElement("div");d.textContent=String(s);return d.innerHTML;
+    return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   }
 
   function badgeClass(state){
@@ -207,6 +207,26 @@ a:hover{text-decoration:underline}
   function truncSid(sid){
     if(!sid)return null;
     return sid.length>12?sid.slice(0,8)+"…"+sid.slice(-4):sid;
+  }
+
+  function formatAge(iso){
+    if(!iso)return"-";
+    var t=new Date(iso).getTime();
+    if(isNaN(t))return"-";
+    var sec=Math.max(Math.floor((Date.now()-t)/1000),0);
+    if(sec<60)return sec+"s";
+    return Math.floor(sec/60)+"m "+sec%60+"s";
+  }
+
+  function truncSession(sid){
+    if(!sid)return"-";
+    if(sid.length>10)return sid.slice(0,4)+"..."+sid.slice(-6);
+    return sid;
+  }
+
+  function fmtTokens(n){
+    if(n==null)return"0";
+    return n.toLocaleString("en-US");
   }
 
   // ---- state ----
@@ -254,30 +274,25 @@ a:hover{text-decoration:underline}
       rb.innerHTML='<p class="empty-state">No active sessions.</p>';
     }else{
       var h='<div class="table-wrap"><table class="data-table"><thead><tr>';
-      h+='<th>Issue</th><th>State</th><th>Session</th><th>Runtime / turns</th><th>Codex update</th><th>Tokens</th>';
+      h+='<th>Issue</th><th>State</th><th>PID</th><th>Age / Turn</th><th>Tokens</th><th>Session</th><th>Event</th>';
       h+='</tr></thead><tbody>';
-      d.running.forEach(function(e){
-        var sid=e.session_id;
-        var sidCell;
-        if(sid){
-          sidCell='<button class="copy-btn" data-copy="'+esc(sid)+'" onclick="var b=this;navigator.clipboard.writeText(b.dataset.copy);b.textContent=\'Copied\';clearTimeout(b._t);b._t=setTimeout(function(){b.textContent=\''+esc(truncSid(sid))+'\'},1200);">'+esc(truncSid(sid))+'</button>';
-        }else{
-          sidCell='<span class="muted">n/a</span>';
-        }
-        var runtimeTurns=fmtRuntime(elapsedSec(e.started_at));
-        if(e.turn_count>0)runtimeTurns+=" / "+e.turn_count;
+      d.running.forEach(function(r){
+        var pid=r.pid!=null?String(r.pid):"-";
+        var age=formatAge(r.started_at);
+        var ageTurn=age+(r.turn_count>0?" / "+r.turn_count:"");
+        var sid=r.session_id;
+        var session=truncSession(sid);
+        var event=r.last_message||r.last_event||"-";
 
-        var evtText=esc(e.last_message||e.last_event||"n/a");
-        var evtMeta=esc(e.last_event||"n/a");
-
-        h+='<tr>';
-        h+='<td><div class="issue-stack"><span class="issue-id">'+esc(e.identifier)+'</span><a class="issue-link" href="/api/v1/'+encodeURIComponent(e.identifier)+'">JSON</a></div></td>';
-        h+='<td><span class="'+badgeClass(e.state)+'">'+esc(e.state)+'</span></td>';
-        h+='<td><div class="session-stack">'+sidCell+'</div></td>';
-        h+='<td class="numeric runtime-cell" data-started="'+esc(e.started_at)+'" data-turns="'+(e.turn_count||0)+'">'+runtimeTurns+'</td>';
-        h+='<td><div class="detail-stack"><span class="event-text" title="'+evtText+'">'+evtText+'</span><span class="event-meta muted">'+evtMeta+'</span></div></td>';
-        h+='<td><div class="token-stack numeric"><span>'+fmtInt(e.total_tokens)+'</span><span class="muted">In '+fmtInt(e.input_tokens)+' / Out '+fmtInt(e.output_tokens)+'</span></div></td>';
-        h+='</tr>';
+        h+=`<tr>`;
+        h+=`<td><div class="issue-stack"><span class="issue-id">${esc(r.identifier)}</span><a class="issue-link" href="/api/v1/${encodeURIComponent(r.identifier)}">JSON</a></div></td>`;
+        h+=`<td><span class="${badgeClass(r.state)}">${esc(r.state)}</span></td>`;
+        h+=`<td class="numeric">${esc(pid)}</td>`;
+        h+=`<td class="numeric runtime-cell" data-started="${esc(r.started_at)}" data-turns="${r.turn_count||0}">${esc(ageTurn)}</td>`;
+        h+=`<td><div class="token-stack numeric"><span>${fmtTokens(r.total_tokens)}</span><span class="muted">In ${fmtTokens(r.input_tokens)} / Out ${fmtTokens(r.output_tokens)}</span></div></td>`;
+        h+=`<td>${esc(session)}</td>`;
+        h+=`<td class="event"><span class="event-text" title="${esc(event)}">${esc(event)}</span></td>`;
+        h+=`</tr>`;
       });
       h+='</tbody></table></div>';
       rb.innerHTML=h;

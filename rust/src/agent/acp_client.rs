@@ -81,16 +81,26 @@ pub struct JsonRpcResponse {
 /// Guard that kills the child process on drop.
 pub struct ChildGuard {
     child: Option<Child>,
+    pid: Option<u32>,
 }
 
 impl ChildGuard {
     pub fn new(child: Child) -> Self {
-        Self { child: Some(child) }
+        let pid = child.id();
+        Self {
+            child: Some(child),
+            pid,
+        }
     }
 
     /// Take ownership of the child (prevents kill on drop).
     pub fn take(&mut self) -> Option<Child> {
         self.child.take()
+    }
+
+    /// Return the OS process ID captured at launch time.
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
     }
 }
 
@@ -175,12 +185,19 @@ impl AcpClient {
         let stdin = child.stdin.take().expect("stdin should be piped");
         let stdout = child.stdout.take().expect("stdout should be piped");
 
+        let guard = ChildGuard::new(child);
+        info!(pid = ?guard.pid(), command, "launched agent subprocess");
         Ok(Self {
-            guard: ChildGuard::new(child),
+            guard,
             stdin,
             reader: BufReader::new(stdout),
             next_id: 1,
         })
+    }
+
+    /// Return the OS process ID of the managed child process.
+    pub fn pid(&self) -> Option<u32> {
+        self.guard.pid()
     }
 
     /// Send a JSON-RPC request (with ID) and return the ID used.
@@ -411,7 +428,11 @@ impl AcpClient {
             .and_then(|r| {
                 r.get("sessionId")
                     .and_then(Value::as_str)
-                    .or_else(|| r.get("session").and_then(|s| s.get("id")).and_then(Value::as_str))
+                    .or_else(|| {
+                        r.get("session")
+                            .and_then(|s| s.get("id"))
+                            .and_then(Value::as_str)
+                    })
                     .or_else(|| r.get("id").and_then(Value::as_str))
             })
             .map(ToOwned::to_owned)
@@ -917,7 +938,11 @@ mod tests {
             })),
         };
         match classify_event(&msg) {
-            AgentEvent::TokenUsage { input, output, total } => {
+            AgentEvent::TokenUsage {
+                input,
+                output,
+                total,
+            } => {
                 assert_eq!(input, 5000);
                 assert_eq!(output, 0);
                 assert_eq!(total, 5000);

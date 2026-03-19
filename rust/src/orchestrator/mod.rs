@@ -55,6 +55,7 @@ pub struct RunningSnapshot {
     pub issue_id: String,
     pub identifier: String,
     pub state: String,
+    pub pid: Option<u32>,
     pub session_id: Option<String>,
     pub turn_count: u32,
     pub last_event: Option<String>,
@@ -316,6 +317,7 @@ pub fn build_snapshot(state: &OrchestratorState) -> OrchestratorSnapshot {
             issue_id: entry.issue_id.clone(),
             identifier: entry.identifier.clone(),
             state: entry.issue.state.clone(),
+            pid: entry.pid,
             session_id: entry.session_id.clone(),
             turn_count: entry.turn_count,
             last_event: entry.last_event.clone(),
@@ -358,12 +360,17 @@ fn apply_agent_update_to_state(
     output_tokens: Option<u64>,
     total_tokens: Option<u64>,
     session_id: Option<String>,
+    pid: Option<u32>,
     workspace_root: &Path,
 ) {
     if let Some(entry) = state.running.get_mut(issue_id) {
         entry.last_event = Some(event.clone());
         entry.last_event_at = Some(Utc::now());
         entry.last_message = message;
+
+        if let Some(pid) = pid {
+            entry.pid = Some(pid);
+        }
 
         if let Some(ref session_id) = session_id {
             entry.session_id = Some(session_id.clone());
@@ -764,6 +771,7 @@ pub async fn run_orchestrator(
                                 issue_id: issue_id.clone(),
                                 identifier: identifier.clone(),
                                 issue,
+                                pid: None,
                                 session_id: None,
                                 last_event: None,
                                 last_event_at: None,
@@ -797,6 +805,7 @@ pub async fn run_orchestrator(
                     update.output_tokens,
                     update.total_tokens,
                     update.session_id,
+                    update.pid,
                     &workspace_root,
                 );
             }
@@ -918,6 +927,7 @@ pub async fn run_orchestrator(
                             None,
                             None,
                             None,
+                            None,
                             &workspace_root,
                         );
                     }
@@ -975,29 +985,41 @@ mod tests {
     async fn turn_completed_event_increments_count() {
         let mut state = OrchestratorState::new(5000, 10);
         let handle = tokio::task::spawn(async {});
-        state.running.insert("42".into(), RunningEntry {
-            issue_id: "42".into(),
-            identifier: "rusty-42".into(),
-            issue: dummy_issue("42"),
-            session_id: Some("sess-1".into()),
-            last_event: None,
-            last_event_at: None,
-            last_message: None,
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            last_reported_input: 0,
-            last_reported_output: 0,
-            last_reported_total: 0,
-            turn_count: 0,
-            retry_attempt: None,
-            started_at: Utc::now(),
-            worker_handle: handle.abort_handle(),
-        });
+        state.running.insert(
+            "42".into(),
+            RunningEntry {
+                issue_id: "42".into(),
+                identifier: "rusty-42".into(),
+                issue: dummy_issue("42"),
+                pid: None,
+                session_id: Some("sess-1".into()),
+                last_event: None,
+                last_event_at: None,
+                last_message: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                last_reported_input: 0,
+                last_reported_output: 0,
+                last_reported_total: 0,
+                turn_count: 0,
+                retry_attempt: None,
+                started_at: Utc::now(),
+                worker_handle: handle.abort_handle(),
+            },
+        );
 
         apply_agent_update_to_state(
-            &mut state, "42", "turn_completed".into(),
-            Some("turn 1 completed".into()), None, None, None, None, std::path::Path::new("."),
+            &mut state,
+            "42",
+            "turn_completed".into(),
+            Some("turn 1 completed".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            std::path::Path::new("."),
         );
 
         let entry = state.running.get("42").unwrap();
@@ -1009,28 +1031,41 @@ mod tests {
     async fn completed_event_increments_count() {
         let mut state = OrchestratorState::new(5000, 10);
         let handle = tokio::task::spawn(async {});
-        state.running.insert("42".into(), RunningEntry {
-            issue_id: "42".into(),
-            identifier: "rusty-42".into(),
-            issue: dummy_issue("42"),
-            session_id: None,
-            last_event: None,
-            last_event_at: None,
-            last_message: None,
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            last_reported_input: 0,
-            last_reported_output: 0,
-            last_reported_total: 0,
-            turn_count: 0,
-            retry_attempt: None,
-            started_at: Utc::now(),
-            worker_handle: handle.abort_handle(),
-        });
+        state.running.insert(
+            "42".into(),
+            RunningEntry {
+                issue_id: "42".into(),
+                identifier: "rusty-42".into(),
+                issue: dummy_issue("42"),
+                pid: None,
+                session_id: None,
+                last_event: None,
+                last_event_at: None,
+                last_message: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                last_reported_input: 0,
+                last_reported_output: 0,
+                last_reported_total: 0,
+                turn_count: 0,
+                retry_attempt: None,
+                started_at: Utc::now(),
+                worker_handle: handle.abort_handle(),
+            },
+        );
 
         apply_agent_update_to_state(
-            &mut state, "42", "completed".into(), None, None, None, None, None, std::path::Path::new("."),
+            &mut state,
+            "42",
+            "completed".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            std::path::Path::new("."),
         );
 
         assert_eq!(state.running.get("42").unwrap().turn_count, 1);
@@ -1040,29 +1075,41 @@ mod tests {
     async fn notification_event_does_not_increment_count() {
         let mut state = OrchestratorState::new(5000, 10);
         let handle = tokio::task::spawn(async {});
-        state.running.insert("42".into(), RunningEntry {
-            issue_id: "42".into(),
-            identifier: "rusty-42".into(),
-            issue: dummy_issue("42"),
-            session_id: None,
-            last_event: None,
-            last_event_at: None,
-            last_message: None,
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            last_reported_input: 0,
-            last_reported_output: 0,
-            last_reported_total: 0,
-            turn_count: 0,
-            retry_attempt: None,
-            started_at: Utc::now(),
-            worker_handle: handle.abort_handle(),
-        });
+        state.running.insert(
+            "42".into(),
+            RunningEntry {
+                issue_id: "42".into(),
+                identifier: "rusty-42".into(),
+                issue: dummy_issue("42"),
+                pid: None,
+                session_id: None,
+                last_event: None,
+                last_event_at: None,
+                last_message: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                last_reported_input: 0,
+                last_reported_output: 0,
+                last_reported_total: 0,
+                turn_count: 0,
+                retry_attempt: None,
+                started_at: Utc::now(),
+                worker_handle: handle.abort_handle(),
+            },
+        );
 
         apply_agent_update_to_state(
-            &mut state, "42", "notification".into(),
-            Some("session update".into()), None, None, None, None, std::path::Path::new("."),
+            &mut state,
+            "42",
+            "notification".into(),
+            Some("session update".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            std::path::Path::new("."),
         );
 
         let entry = state.running.get("42").unwrap();
@@ -1074,29 +1121,41 @@ mod tests {
     async fn token_usage_updates_totals() {
         let mut state = OrchestratorState::new(5000, 10);
         let handle = tokio::task::spawn(async {});
-        state.running.insert("42".into(), RunningEntry {
-            issue_id: "42".into(),
-            identifier: "rusty-42".into(),
-            issue: dummy_issue("42"),
-            session_id: None,
-            last_event: None,
-            last_event_at: None,
-            last_message: None,
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            last_reported_input: 0,
-            last_reported_output: 0,
-            last_reported_total: 0,
-            turn_count: 0,
-            retry_attempt: None,
-            started_at: Utc::now(),
-            worker_handle: handle.abort_handle(),
-        });
+        state.running.insert(
+            "42".into(),
+            RunningEntry {
+                issue_id: "42".into(),
+                identifier: "rusty-42".into(),
+                issue: dummy_issue("42"),
+                pid: None,
+                session_id: None,
+                last_event: None,
+                last_event_at: None,
+                last_message: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                last_reported_input: 0,
+                last_reported_output: 0,
+                last_reported_total: 0,
+                turn_count: 0,
+                retry_attempt: None,
+                started_at: Utc::now(),
+                worker_handle: handle.abort_handle(),
+            },
+        );
 
         apply_agent_update_to_state(
-            &mut state, "42", "token_usage".into(),
-            None, Some(100), Some(200), Some(300), None, std::path::Path::new("."),
+            &mut state,
+            "42",
+            "token_usage".into(),
+            None,
+            Some(100),
+            Some(200),
+            Some(300),
+            None,
+            None,
+            std::path::Path::new("."),
         );
 
         let entry = state.running.get("42").unwrap();
@@ -1110,62 +1169,89 @@ mod tests {
     async fn session_id_updated_on_event() {
         let mut state = OrchestratorState::new(5000, 10);
         let handle = tokio::task::spawn(async {});
-        state.running.insert("42".into(), RunningEntry {
-            issue_id: "42".into(),
-            identifier: "rusty-42".into(),
-            issue: dummy_issue("42"),
-            session_id: None,
-            last_event: None,
-            last_event_at: None,
-            last_message: None,
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            last_reported_input: 0,
-            last_reported_output: 0,
-            last_reported_total: 0,
-            turn_count: 0,
-            retry_attempt: None,
-            started_at: Utc::now(),
-            worker_handle: handle.abort_handle(),
-        });
-
-        apply_agent_update_to_state(
-            &mut state, "42", "session_started".into(),
-            Some("session abc".into()), None, None, None, Some("abc-123".into()), std::path::Path::new("."),
+        state.running.insert(
+            "42".into(),
+            RunningEntry {
+                issue_id: "42".into(),
+                identifier: "rusty-42".into(),
+                issue: dummy_issue("42"),
+                pid: None,
+                session_id: None,
+                last_event: None,
+                last_event_at: None,
+                last_message: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                last_reported_input: 0,
+                last_reported_output: 0,
+                last_reported_total: 0,
+                turn_count: 0,
+                retry_attempt: None,
+                started_at: Utc::now(),
+                worker_handle: handle.abort_handle(),
+            },
         );
 
-        assert_eq!(state.running.get("42").unwrap().session_id.as_deref(), Some("abc-123"));
+        apply_agent_update_to_state(
+            &mut state,
+            "42",
+            "session_started".into(),
+            Some("session abc".into()),
+            None,
+            None,
+            None,
+            Some("abc-123".into()),
+            None,
+            std::path::Path::new("."),
+        );
+
+        assert_eq!(
+            state.running.get("42").unwrap().session_id.as_deref(),
+            Some("abc-123")
+        );
     }
 
     #[tokio::test]
     async fn multiple_turns_accumulate() {
         let mut state = OrchestratorState::new(5000, 10);
         let handle = tokio::task::spawn(async {});
-        state.running.insert("42".into(), RunningEntry {
-            issue_id: "42".into(),
-            identifier: "rusty-42".into(),
-            issue: dummy_issue("42"),
-            session_id: None,
-            last_event: None,
-            last_event_at: None,
-            last_message: None,
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            last_reported_input: 0,
-            last_reported_output: 0,
-            last_reported_total: 0,
-            turn_count: 0,
-            retry_attempt: None,
-            started_at: Utc::now(),
-            worker_handle: handle.abort_handle(),
-        });
+        state.running.insert(
+            "42".into(),
+            RunningEntry {
+                issue_id: "42".into(),
+                identifier: "rusty-42".into(),
+                issue: dummy_issue("42"),
+                pid: None,
+                session_id: None,
+                last_event: None,
+                last_event_at: None,
+                last_message: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                last_reported_input: 0,
+                last_reported_output: 0,
+                last_reported_total: 0,
+                turn_count: 0,
+                retry_attempt: None,
+                started_at: Utc::now(),
+                worker_handle: handle.abort_handle(),
+            },
+        );
 
         for i in 1..=5 {
             apply_agent_update_to_state(
-                &mut state, "42", "turn_completed".into(),
-                Some(format!("turn {i} completed")), None, None, None, None, std::path::Path::new("."),
+                &mut state,
+                "42",
+                "turn_completed".into(),
+                Some(format!("turn {i} completed")),
+                None,
+                None,
+                None,
+                None,
+                None,
+                std::path::Path::new("."),
             );
         }
 
@@ -1177,8 +1263,16 @@ mod tests {
         let mut state = OrchestratorState::new(5000, 10);
         // Should not panic
         apply_agent_update_to_state(
-            &mut state, "nonexistent", "turn_completed".into(),
-            None, None, None, None, None, std::path::Path::new("."),
+            &mut state,
+            "nonexistent",
+            "turn_completed".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            std::path::Path::new("."),
         );
     }
 }

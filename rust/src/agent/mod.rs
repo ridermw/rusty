@@ -189,6 +189,8 @@ pub async fn run_agent_attempt(
             }
         };
 
+        let agent_pid = client.pid();
+
         if let Err(e) = client.handshake(config.agent.read_timeout_ms).await {
             let error_message = format!("handshake: {e}");
             error!(error = %e, "ACP handshake failed");
@@ -236,6 +238,7 @@ pub async fn run_agent_attempt(
                 output_tokens: None,
                 total_tokens: None,
                 session_id: Some(session_id.clone()),
+                pid: agent_pid,
             },
         )
         .await;
@@ -279,6 +282,7 @@ pub async fn run_agent_attempt(
                                 output_tokens: Some(*output),
                                 total_tokens: Some(*total),
                                 session_id: Some(session_id.clone()),
+                                pid: agent_pid,
                             },
                             crate::agent::AgentEvent::Notification { message } => AgentUpdate {
                                 issue_id: issue_id.clone(),
@@ -288,6 +292,7 @@ pub async fn run_agent_attempt(
                                 output_tokens: None,
                                 total_tokens: None,
                                 session_id: Some(session_id.clone()),
+                                pid: agent_pid,
                             },
                             _ => AgentUpdate {
                                 issue_id: issue_id.clone(),
@@ -297,6 +302,7 @@ pub async fn run_agent_attempt(
                                 output_tokens: None,
                                 total_tokens: None,
                                 session_id: Some(session_id.clone()),
+                                pid: agent_pid,
                             },
                         };
                         let _ = update_tx.try_send(update);
@@ -390,6 +396,7 @@ pub struct AgentUpdate {
     pub output_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
     pub session_id: Option<String>,
+    pub pid: Option<u32>,
 }
 
 impl AgentUpdate {
@@ -402,6 +409,7 @@ impl AgentUpdate {
             output_tokens: None,
             total_tokens: None,
             session_id: None,
+            pid: None,
         }
     }
 
@@ -471,6 +479,7 @@ async fn emit_log_token_usage(
                     output_tokens: Some(usage.completion_tokens),
                     total_tokens: Some(usage.total_tokens),
                     session_id: Some(session_id.to_string()),
+                    pid: None,
                 },
             )
             .await;

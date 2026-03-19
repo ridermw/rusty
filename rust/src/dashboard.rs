@@ -44,12 +44,38 @@ pub fn render_dashboard(snapshot: &OrchestratorSnapshot) -> String {
 }
 
 fn format_running_entry(running: &RunningSnapshot) -> String {
-    let event = humanize_event(running.last_event.as_deref().unwrap_or("-"));
-    let message = truncate(running.last_message.as_deref().unwrap_or(""), 60);
+    let pid = running
+        .pid
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let event = running
+        .last_message
+        .as_deref()
+        .filter(|m| !m.trim().is_empty())
+        .or(running.last_event.as_deref())
+        .unwrap_or("-");
+    let message = truncate(event, 60);
+    let session = running
+        .session_id
+        .as_deref()
+        .map(|sid| {
+            if sid.len() > 10 {
+                format!("{}...{}", &sid[..4], &sid[sid.len() - 6..])
+            } else {
+                sid.to_string()
+            }
+        })
+        .unwrap_or_else(|| "-".to_string());
 
     format!(
-        "  {} [{}] turns:{} tokens:{} | {} {}\n",
-        running.identifier, running.state, running.turn_count, running.total_tokens, event, message,
+        "  {} [{}] pid:{} turns:{} tokens:{} session:{} | {}\n",
+        running.identifier,
+        running.state,
+        pid,
+        running.turn_count,
+        running.total_tokens,
+        session,
+        message,
     )
 }
 

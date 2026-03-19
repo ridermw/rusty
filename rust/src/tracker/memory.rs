@@ -115,11 +115,7 @@ impl Tracker for MemoryTracker {
             .collect())
     }
 
-    async fn save_session_id(
-        &self,
-        issue_id: &str,
-        session_id: &str,
-    ) -> Result<(), TrackerError> {
+    async fn save_session_id(&self, issue_id: &str, session_id: &str) -> Result<(), TrackerError> {
         self.sessions
             .write()
             .unwrap()

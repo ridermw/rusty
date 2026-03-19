@@ -103,7 +103,11 @@ fn collect_headers(response: &reqwest::Response) -> HashMap<String, String> {
     response
         .headers()
         .iter()
-        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_lowercase(), v.to_string())))
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|v| (k.as_str().to_lowercase(), v.to_string()))
+        })
         .collect()
 }
 
@@ -176,11 +180,7 @@ pub struct ProcessOutput {
 /// Abstraction over async subprocess execution.
 #[async_trait]
 pub trait ProcessRunner: Send + Sync {
-    async fn run(
-        &self,
-        cmd: &str,
-        args: &[&str],
-    ) -> Result<ProcessOutput, ProcessRunnerError>;
+    async fn run(&self, cmd: &str, args: &[&str]) -> Result<ProcessOutput, ProcessRunnerError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -195,11 +195,7 @@ pub struct TokioProcessRunner;
 
 #[async_trait]
 impl ProcessRunner for TokioProcessRunner {
-    async fn run(
-        &self,
-        cmd: &str,
-        args: &[&str],
-    ) -> Result<ProcessOutput, ProcessRunnerError> {
+    async fn run(&self, cmd: &str, args: &[&str]) -> Result<ProcessOutput, ProcessRunnerError> {
         let output = tokio::process::Command::new(cmd)
             .args(args)
             .output()
