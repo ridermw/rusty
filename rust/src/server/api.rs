@@ -29,6 +29,8 @@ pub fn build_router_with_sse(
     orchestrator_tx: mpsc::Sender<OrchestratorMsg>,
     sse_tx: Option<broadcast::Sender<OrchestratorSnapshot>>,
 ) -> Router {
+    // When no external sender is provided (e.g. tests), create a standalone channel.
+    // The sender is stored in AppState; SSE clients subscribe on demand via sse_tx.subscribe().
     let sse_tx = sse_tx.unwrap_or_else(|| broadcast::channel(64).0);
     let state = AppState {
         orchestrator_tx,
