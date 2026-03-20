@@ -229,6 +229,18 @@ a:hover{text-decoration:underline}
     return n.toLocaleString("en-US");
   }
 
+  function safeHref(url){
+    if(!url)return null;
+    var u=String(url).trim();
+    if(u.startsWith("https://")||u.startsWith("http://"))return u;
+    return null;
+  }
+  function issueCell(identifier,url){
+    var safe=safeHref(url);
+    if(safe)return'<a href="'+esc(safe)+'" target="_blank" rel="noopener noreferrer">'+esc(identifier)+'</a>';
+    return esc(identifier);
+  }
+
   // ---- state ----
   var lastData=null;
   var badge=document.getElementById("live-badge");
@@ -285,7 +297,7 @@ a:hover{text-decoration:underline}
         var event=r.last_message||r.last_event||"-";
 
         h+=`<tr>`;
-        h+=`<td><div class="issue-stack"><span class="issue-id">${esc(r.identifier)}</span><a class="issue-link" href="/api/v1/${encodeURIComponent(r.identifier)}">JSON</a></div></td>`;
+        h+=`<td><div class="issue-stack">${issueCell(r.identifier,r.issue_url)}<a class="issue-link" href="/api/v1/${encodeURIComponent(r.identifier)}">JSON</a></div></td>`;
         h+=`<td><span class="${badgeClass(r.state)}">${esc(r.state)}</span></td>`;
         h+=`<td class="numeric">${esc(pid)}</td>`;
         h+=`<td class="numeric runtime-cell" data-started="${esc(r.started_at)}" data-turns="${r.turn_count||0}">${esc(ageTurn)}</td>`;
@@ -309,7 +321,7 @@ a:hover{text-decoration:underline}
       rh+='</tr></thead><tbody>';
       d.retrying.forEach(function(e){
         rh+='<tr>';
-        rh+='<td><div class="issue-stack"><span class="issue-id">'+esc(e.identifier)+'</span><a class="issue-link" href="/api/v1/'+encodeURIComponent(e.identifier)+'">JSON</a></div></td>';
+        rh+='<td><div class="issue-stack">'+issueCell(e.identifier,e.issue_url)+'<a class="issue-link" href="/api/v1/'+encodeURIComponent(e.identifier)+'">JSON</a></div></td>';
         rh+='<td>'+esc(e.attempt)+'</td>';
         rh+='<td class="numeric">'+esc(e.due_at||"n/a")+'</td>';
         rh+='<td>'+esc(e.error||"n/a")+'</td>';
@@ -353,11 +365,28 @@ a:hover{text-decoration:underline}
     });
   }
 
+  // ---- SSE for real-time updates ----
+  function connectSSE(){
+    var es=new EventSource("/api/v1/events");
+    es.addEventListener("snapshot",function(e){
+      try{render(JSON.parse(e.data));}catch(err){console.error("SSE parse error",err);}
+    });
+    es.onerror=function(){
+      // SSE disconnected; polling fallback keeps state fresh
+      badge.className="live-badge live-badge-off";
+      badge.innerHTML='<span class="live-dot"></span> Reconnecting';
+    };
+    es.onopen=function(){
+      badge.className="live-badge live-badge-on";
+      badge.innerHTML='<span class="live-dot"></span> Live';
+    };
+  }
+
   fetchState();
   setInterval(fetchState,2000);
   setInterval(updateRuntime,1000);
-})();
-</script>
+  connectSSE();
+})();</script>
 </body>
 </html>"##
         .to_string()

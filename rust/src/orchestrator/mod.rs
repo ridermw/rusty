@@ -64,6 +64,7 @@ pub struct RunningSnapshot {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
+    pub issue_url: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -73,6 +74,7 @@ pub struct RetrySnapshot {
     pub attempt: u32,
     pub due_at: String,
     pub error: Option<String>,
+    pub issue_url: Option<String>,
 }
 
 /// Check if an issue is eligible for dispatch.
@@ -308,6 +310,19 @@ pub fn next_attempt(current: Option<u32>, is_normal_exit: bool) -> u32 {
     }
 }
 
+/// Sanitize a URL to only allow `http` and `https` schemes.
+/// Returns `None` for dangerous schemes (e.g. `javascript:`, `data:`).
+pub fn sanitize_url(url: &Option<String>) -> Option<String> {
+    url.as_ref().and_then(|u| {
+        let trimmed = u.trim();
+        if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
+            Some(trimmed.to_string())
+        } else {
+            None
+        }
+    })
+}
+
 /// Build a snapshot from current state.
 pub fn build_snapshot(state: &OrchestratorState) -> OrchestratorSnapshot {
     let running: Vec<RunningSnapshot> = state
@@ -326,6 +341,7 @@ pub fn build_snapshot(state: &OrchestratorState) -> OrchestratorSnapshot {
             input_tokens: entry.input_tokens,
             output_tokens: entry.output_tokens,
             total_tokens: entry.total_tokens,
+            issue_url: sanitize_url(&entry.issue.url),
         })
         .collect();
 
@@ -338,6 +354,7 @@ pub fn build_snapshot(state: &OrchestratorState) -> OrchestratorSnapshot {
             attempt: entry.attempt,
             due_at: entry.due_at.to_rfc3339(),
             error: entry.error.clone(),
+            issue_url: sanitize_url(&entry.issue_url),
         })
         .collect();
 
@@ -587,6 +604,31 @@ fn schedule_retry(msg_tx: &mpsc::Sender<OrchestratorMsg>, issue_id: String, dela
 
 /// Run the orchestrator main loop. This is the heart of Rusty.
 pub async fn run_orchestrator(
+    state: OrchestratorState,
+    config: RustyConfig,
+    tracker: Arc<dyn crate::tracker::Tracker>,
+    workflow_prompt: String,
+    workspace_root: std::path::PathBuf,
+    shell_executor: Arc<dyn ShellExecutor>,
+    msg_rx: mpsc::Receiver<OrchestratorMsg>,
+    msg_tx: mpsc::Sender<OrchestratorMsg>,
+) {
+    run_orchestrator_with_sse(
+        state,
+        config,
+        tracker,
+        workflow_prompt,
+        workspace_root,
+        shell_executor,
+        msg_rx,
+        msg_tx,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_orchestrator_with_sse(
     mut state: OrchestratorState,
     config: RustyConfig,
     tracker: Arc<dyn crate::tracker::Tracker>,
@@ -595,6 +637,7 @@ pub async fn run_orchestrator(
     shell_executor: Arc<dyn ShellExecutor>,
     mut msg_rx: mpsc::Receiver<OrchestratorMsg>,
     msg_tx: mpsc::Sender<OrchestratorMsg>,
+    sse_tx: Option<tokio::sync::broadcast::Sender<OrchestratorSnapshot>>,
 ) {
     let mut workers: JoinSet<(String, bool, Option<String>)> = JoinSet::new();
     let (agent_update_tx, mut agent_update_rx) = mpsc::channel::<crate::agent::AgentUpdate>(256);
@@ -602,6 +645,15 @@ pub async fn run_orchestrator(
         tokio::time::interval(tokio::time::Duration::from_millis(state.poll_interval_ms));
     let active_states = config.tracker.effective_active_states();
     let terminal_states = config.tracker.effective_terminal_states();
+
+    // Broadcast snapshot to SSE subscribers after state mutations
+    macro_rules! broadcast_snapshot {
+        ($state:expr, $sse_tx:expr) => {
+            if let Some(ref tx) = $sse_tx {
+                let _ = tx.send(build_snapshot($state));
+            }
+        };
+    }
 
     tracing::info!(
         poll_ms = state.poll_interval_ms,
@@ -793,6 +845,7 @@ pub async fn run_orchestrator(
                         tracing::error!(error = %error, "failed to fetch candidates, skipping tick");
                     }
                 }
+                broadcast_snapshot!(&state, sse_tx);
             }
 
             Some(update) = agent_update_rx.recv() => {
@@ -808,6 +861,7 @@ pub async fn run_orchestrator(
                     update.pid,
                     &workspace_root,
                 );
+                broadcast_snapshot!(&state, sse_tx);
             }
 
             Some(result) = workers.join_next() => {
@@ -887,6 +941,7 @@ pub async fn run_orchestrator(
                                     due_at: chrono::Utc::now()
                                         + chrono::Duration::milliseconds(delay_ms as i64),
                                     error: error.clone(),
+                                    issue_url: entry.issue.url.clone(),
                                 },
                             );
                             schedule_retry(&msg_tx, issue_id.clone(), delay_ms);
@@ -899,6 +954,7 @@ pub async fn run_orchestrator(
                         tracing::error!(error = %error, "worker task panicked");
                     }
                 }
+                broadcast_snapshot!(&state, sse_tx);
             }
 
             msg = msg_rx.recv() => {

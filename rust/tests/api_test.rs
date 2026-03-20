@@ -5,10 +5,10 @@ use axum::{
 use chrono::{TimeZone, Utc};
 use rusty::orchestrator::state::{OrchestratorState, RunningEntry, TokenTotals};
 use rusty::orchestrator::{build_snapshot, OrchestratorMsg, OrchestratorSnapshot};
-use rusty::server::api::build_router;
+use rusty::server::api::{build_router, build_router_with_sse};
 use rusty::tracker::Issue;
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tower::ServiceExt; // for oneshot
 
 fn make_issue(id: &str, identifier: &str, state: &str) -> Issue {
@@ -257,13 +257,164 @@ async fn dashboard_html_escapes_dynamic_content_to_prevent_xss() {
         "esc() must replace &, <, > with HTML entities"
     );
 
-    // All dynamic interpolations in table rows must go through esc()
+    // All dynamic interpolations in table rows must go through esc() or issueCell() (which calls esc internally)
     assert!(
-        html.contains("${esc(r.identifier)}"),
+        html.contains("issueCell(r.identifier") || html.contains("${esc(r.identifier)}"),
         "identifier must be escaped"
     );
     assert!(html.contains("${esc(r.state)}"), "state must be escaped");
     assert!(html.contains("${esc(event)}"), "event text must be escaped");
     assert!(html.contains("${esc(session)}"), "session must be escaped");
     assert!(html.contains("${esc(pid)}"), "pid must be escaped");
+}
+
+#[tokio::test]
+async fn test_snapshot_has_issue_url() {
+    let app = test_app(make_snapshot());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/state")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(
+        json["running"][0]["issue_url"],
+        "https://example.test/issues/ISSUE-1"
+    );
+}
+
+#[tokio::test]
+async fn get_events_returns_sse_content_type() {
+    let (sse_tx, _) = broadcast::channel::<OrchestratorSnapshot>(16);
+    let (tx, mut rx) = mpsc::channel(8);
+    let snapshot = make_snapshot();
+    tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            match msg {
+                OrchestratorMsg::SnapshotRequest { reply } => {
+                    let _ = reply.send(snapshot.clone());
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let app = build_router_with_sse(tx, Some(sse_tx));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/events")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .expect("content-type");
+    assert!(
+        content_type.contains("text/event-stream"),
+        "expected text/event-stream, got: {content_type}"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_html_contains_xss_escape_function() {
+    let app = test_app(make_snapshot());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body bytes");
+    let html = String::from_utf8(bytes.to_vec()).expect("utf8 html");
+    assert!(
+        html.contains("function esc("),
+        "dashboard must include HTML escape function"
+    );
+    assert!(
+        html.contains("function safeHref("),
+        "dashboard must include URL scheme validation function"
+    );
+    assert!(
+        html.contains("noopener noreferrer"),
+        "external links must include rel=noopener noreferrer"
+    );
+}
+
+#[tokio::test]
+async fn get_state_neutralizes_javascript_issue_url() {
+    let issue = make_issue("1", "HOSTILE-1", "open");
+    let mut hostile_issue = issue.clone();
+    hostile_issue.url = Some("javascript:alert(1)".into());
+
+    let worker = tokio::spawn(async {});
+    let mut state = OrchestratorState::new(1_000, 2);
+    state.running.insert(
+        hostile_issue.id.clone(),
+        RunningEntry {
+            issue_id: hostile_issue.id.clone(),
+            identifier: hostile_issue.identifier.clone(),
+            issue: hostile_issue,
+            pid: None,
+            session_id: None,
+            last_event: None,
+            last_event_at: None,
+            last_message: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            last_reported_input: 0,
+            last_reported_output: 0,
+            last_reported_total: 0,
+            turn_count: 0,
+            retry_attempt: None,
+            started_at: Utc
+                .with_ymd_and_hms(2024, 1, 1, 12, 0, 0)
+                .single()
+                .expect("valid"),
+            worker_handle: worker.abort_handle(),
+        },
+    );
+
+    let snapshot = rusty::orchestrator::build_snapshot(&state);
+    let app = test_app(snapshot);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/state")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert!(
+        json["running"][0]["issue_url"].is_null(),
+        "javascript: URL must be neutralized to null, got: {}",
+        json["running"][0]["issue_url"]
+    );
 }

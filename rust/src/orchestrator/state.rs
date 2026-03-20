@@ -41,6 +41,7 @@ pub struct RetryEntry {
     pub attempt: u32,
     pub due_at: DateTime<Utc>,
     pub error: Option<String>,
+    pub issue_url: Option<String>,
 }
 
 #[derive(Debug)]

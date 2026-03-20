@@ -37,6 +37,7 @@ fn render_dashboard_with_running_and_retry_sections_shows_both_sections() {
             input_tokens: 10,
             output_tokens: 20,
             total_tokens: 30,
+            issue_url: None,
         }],
         retrying: vec![RetrySnapshot {
             issue_id: "2".into(),
@@ -44,6 +45,7 @@ fn render_dashboard_with_running_and_retry_sections_shows_both_sections() {
             attempt: 2,
             due_at: "2024-01-02T03:05:00Z".into(),
             error: Some("network timeout".into()),
+            issue_url: None,
         }],
         agent_totals: TokenTotals {
             input_tokens: 10,
@@ -136,6 +138,7 @@ fn render_dashboard_with_multiple_running_sessions() {
                 input_tokens: 10,
                 output_tokens: 5,
                 total_tokens: 15,
+                issue_url: None,
             },
             RunningSnapshot {
                 issue_id: "2".into(),
@@ -150,6 +153,7 @@ fn render_dashboard_with_multiple_running_sessions() {
                 input_tokens: 20,
                 output_tokens: 10,
                 total_tokens: 30,
+                issue_url: None,
             },
             RunningSnapshot {
                 issue_id: "3".into(),
@@ -164,6 +168,7 @@ fn render_dashboard_with_multiple_running_sessions() {
                 input_tokens: 5,
                 output_tokens: 2,
                 total_tokens: 7,
+                issue_url: None,
             },
         ],
         retrying: vec![],
@@ -195,6 +200,7 @@ fn render_dashboard_retry_entry_with_no_error() {
             attempt: 3,
             due_at: "2024-06-01T12:00:00Z".into(),
             error: None,
+            issue_url: None,
         }],
         agent_totals: TokenTotals::default(),
     };
@@ -225,6 +231,7 @@ fn render_dashboard_running_entry_with_no_optional_fields() {
             input_tokens: 0,
             output_tokens: 0,
             total_tokens: 0,
+            issue_url: None,
         }],
         retrying: vec![],
         agent_totals: TokenTotals::default(),
@@ -256,6 +263,7 @@ fn render_dashboard_truncates_long_messages_at_sixty_chars() {
             input_tokens: 1,
             output_tokens: 2,
             total_tokens: 3,
+            issue_url: None,
         }],
         retrying: vec![],
         agent_totals: TokenTotals {

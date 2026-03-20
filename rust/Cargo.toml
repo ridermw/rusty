@@ -34,6 +34,8 @@ dirs = "5"
 tower-http = { version = "0.5", features = ["cors"] }
 ratatui = "0.29"
 crossterm = "0.28"
+futures-util = "0.3"
+async-stream = "0.3"
 
 [dev-dependencies]
 mockall = "0.12"
