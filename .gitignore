@@ -21,6 +21,9 @@ Thumbs.db
 # Logs (generated at runtime)
 *.log
 rust/logs/
+
+# Runtime state files
+rust/sessions.json
 DASHBOARD_MAPPING.md
 DASHBOARD_QUICK_REFERENCE.md
 IMPLEMENTATION_SUMMARY.md

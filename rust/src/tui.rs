@@ -24,6 +24,7 @@ use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
 use crate::cli::DashboardArgs;
+use crate::dashboard::humanize_event;
 use crate::orchestrator::state::TokenTotals;
 use crate::orchestrator::{OrchestratorSnapshot, RetrySnapshot, RunningSnapshot};
 
@@ -83,12 +84,47 @@ struct DashboardApp {
     running_scroll: usize,
     retry_scroll: usize,
     focus: TableFocus,
+    selected_index: Option<usize>,
+    sort_mode: SortMode,
+    filter_active: bool,
+    filter_text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TableFocus {
     Running,
     Retry,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortMode {
+    Default,
+    Identifier,
+    State,
+    Tokens,
+    Turns,
+}
+
+impl SortMode {
+    fn next(self) -> Self {
+        match self {
+            Self::Default => Self::Identifier,
+            Self::Identifier => Self::State,
+            Self::State => Self::Tokens,
+            Self::Tokens => Self::Turns,
+            Self::Turns => Self::Default,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Identifier => "id",
+            Self::State => "state",
+            Self::Tokens => "tokens",
+            Self::Turns => "turns",
+        }
+    }
 }
 
 impl DashboardApp {
@@ -101,6 +137,10 @@ impl DashboardApp {
             running_scroll: 0,
             retry_scroll: 0,
             focus: TableFocus::Running,
+            selected_index: None,
+            sort_mode: SortMode::Default,
+            filter_active: false,
+            filter_text: String::new(),
         }
     }
 
@@ -149,6 +189,60 @@ impl DashboardApp {
             TableFocus::Running => TableFocus::Retry,
             TableFocus::Retry => TableFocus::Running,
         };
+        self.selected_index = None;
+    }
+
+    fn select_by_number(&mut self, n: usize) {
+        let count = match self.focus {
+            TableFocus::Running => self.visible_running().len(),
+            TableFocus::Retry => self.visible_retrying().len(),
+        };
+        if n > 0 && n <= count {
+            self.selected_index = Some(n - 1);
+        }
+    }
+
+    fn cycle_sort(&mut self) {
+        self.sort_mode = self.sort_mode.next();
+    }
+
+    fn visible_running(&self) -> Vec<RunningSnapshot> {
+        let mut items: Vec<RunningSnapshot> = self
+            .snapshot
+            .running
+            .iter()
+            .filter(|r| {
+                self.filter_text.is_empty()
+                    || r.identifier
+                        .to_lowercase()
+                        .contains(&self.filter_text.to_lowercase())
+            })
+            .cloned()
+            .collect();
+
+        match self.sort_mode {
+            SortMode::Default => {}
+            SortMode::Identifier => items.sort_by(|a, b| a.identifier.cmp(&b.identifier)),
+            SortMode::State => items.sort_by(|a, b| a.state.cmp(&b.state)),
+            SortMode::Tokens => items.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens)),
+            SortMode::Turns => items.sort_by(|a, b| b.turn_count.cmp(&a.turn_count)),
+        }
+
+        items
+    }
+
+    fn visible_retrying(&self) -> Vec<RetrySnapshot> {
+        self.snapshot
+            .retrying
+            .iter()
+            .filter(|r| {
+                self.filter_text.is_empty()
+                    || r.identifier
+                        .to_lowercase()
+                        .contains(&self.filter_text.to_lowercase())
+            })
+            .cloned()
+            .collect()
     }
 }
 
@@ -220,12 +314,46 @@ async fn handle_event(
 ) -> anyhow::Result<bool> {
     match event {
         Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+            // In filter mode, capture text input
+            if app.filter_active {
+                match key.code {
+                    KeyCode::Esc => {
+                        app.filter_active = false;
+                    }
+                    KeyCode::Enter => {
+                        app.filter_active = false;
+                    }
+                    KeyCode::Backspace => {
+                        app.filter_text.pop();
+                    }
+                    KeyCode::Char(c) => {
+                        app.filter_text.push(c);
+                    }
+                    _ => {}
+                }
+                return Ok(false);
+            }
+
             match key.code {
                 KeyCode::Char('q') => return Ok(true),
                 KeyCode::Char('r') => refresh_snapshot(client, app, true).await,
                 KeyCode::Tab => app.toggle_focus(),
                 KeyCode::Up => app.scroll_up(),
                 KeyCode::Down => app.scroll_down(),
+                KeyCode::Char(c @ '1'..='9') => {
+                    app.select_by_number(c.to_digit(10).unwrap_or(0) as usize);
+                }
+                KeyCode::Char('s') => app.cycle_sort(),
+                KeyCode::Char('/') => {
+                    app.filter_active = true;
+                    app.filter_text.clear();
+                }
+                KeyCode::Esc => {
+                    app.selected_index = None;
+                    if !app.filter_text.is_empty() {
+                        app.filter_text.clear();
+                    }
+                }
                 _ => {}
             }
         }
@@ -320,7 +448,7 @@ fn render(frame: &mut Frame<'_>, app: &mut DashboardApp) {
     render_metrics(frame, sections[1], &app.snapshot);
     render_running_table(frame, sections[2], app);
     render_retry_table(frame, sections[3], app);
-    render_footer(frame, sections[4], app.error.as_deref());
+    render_footer(frame, sections[4], app);
 }
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, last_updated: Option<DateTime<Utc>>) {
@@ -416,16 +544,24 @@ fn render_metric_card(
 }
 
 fn render_running_table(frame: &mut Frame<'_>, area: Rect, app: &mut DashboardApp) {
-    let block = section_block(
-        " Running Sessions ",
-        matches!(app.focus, TableFocus::Running),
-    );
+    let sort_label = if app.sort_mode != SortMode::Default {
+        format!(" Running Sessions [sort: {}] ", app.sort_mode.label())
+    } else {
+        " Running Sessions ".to_string()
+    };
+    let block = section_block(&sort_label, matches!(app.focus, TableFocus::Running));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.snapshot.running.is_empty() {
+    let visible = app.visible_running();
+    if visible.is_empty() {
+        let msg = if app.filter_text.is_empty() {
+            "No running sessions."
+        } else {
+            "No matching sessions."
+        };
         frame.render_widget(
-            Paragraph::new("No running sessions.")
+            Paragraph::new(msg)
                 .style(Style::default().bg(PANEL_BG).fg(MUTED))
                 .alignment(Alignment::Left),
             inner,
@@ -434,38 +570,32 @@ fn render_running_table(frame: &mut Frame<'_>, area: Rect, app: &mut DashboardAp
     }
 
     let visible_rows = inner.height.saturating_sub(1) as usize;
-    let max_scroll = app.snapshot.running.len().saturating_sub(visible_rows);
+    let max_scroll = visible.len().saturating_sub(visible_rows);
     app.running_scroll = app.running_scroll.min(max_scroll);
 
-    let rows = app
-        .snapshot
-        .running
+    let selected = if matches!(app.focus, TableFocus::Running) {
+        app.selected_index
+    } else {
+        None
+    };
+
+    let rows = visible
         .iter()
         .skip(app.running_scroll)
         .take(visible_rows)
         .enumerate()
-        .map(|(index, session)| running_row(index, session));
+        .map(|(index, session)| running_row(index, session, selected));
 
-    let header = Row::new(vec![
-        "Issue",
-        "State",
-        "PID",
-        "Age / Turn",
-        "Tokens",
-        "Session",
-        "Event",
-    ])
-    .style(Style::default().fg(ACCENT).bg(PANEL_BG).bold());
+    let header = Row::new(vec!["Issue", "State", "Turns", "Update", "Tokens"])
+        .style(Style::default().fg(ACCENT).bg(PANEL_BG).bold());
     let table = Table::new(
         rows,
         [
-            Constraint::Length(12), // Issue
-            Constraint::Length(12), // State
-            Constraint::Length(9),  // PID
-            Constraint::Length(13), // Age / Turn
-            Constraint::Length(12), // Tokens
-            Constraint::Length(15), // Session
-            Constraint::Min(16),    // Event
+            Constraint::Length(12),
+            Constraint::Length(12),
+            Constraint::Length(7),
+            Constraint::Min(12),
+            Constraint::Length(12),
         ],
     )
     .header(header)
@@ -480,9 +610,15 @@ fn render_retry_table(frame: &mut Frame<'_>, area: Rect, app: &mut DashboardApp)
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.snapshot.retrying.is_empty() {
+    let visible = app.visible_retrying();
+    if visible.is_empty() {
+        let msg = if app.filter_text.is_empty() {
+            "No retrying sessions."
+        } else {
+            "No matching sessions."
+        };
         frame.render_widget(
-            Paragraph::new("No retrying sessions.")
+            Paragraph::new(msg)
                 .style(Style::default().bg(PANEL_BG).fg(MUTED))
                 .alignment(Alignment::Left),
             inner,
@@ -491,12 +627,10 @@ fn render_retry_table(frame: &mut Frame<'_>, area: Rect, app: &mut DashboardApp)
     }
 
     let visible_rows = inner.height.saturating_sub(1) as usize;
-    let max_scroll = app.snapshot.retrying.len().saturating_sub(visible_rows);
+    let max_scroll = visible.len().saturating_sub(visible_rows);
     app.retry_scroll = app.retry_scroll.min(max_scroll);
 
-    let rows = app
-        .snapshot
-        .retrying
+    let rows = visible
         .iter()
         .skip(app.retry_scroll)
         .take(visible_rows)
@@ -521,7 +655,23 @@ fn render_retry_table(frame: &mut Frame<'_>, area: Rect, app: &mut DashboardApp)
     frame.render_widget(table, inner);
 }
 
-fn render_footer(frame: &mut Frame<'_>, area: Rect, error: Option<&str>) {
+fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &DashboardApp) {
+    if app.filter_active {
+        let spans = vec![
+            Span::styled("Filter: ", Style::default().fg(ACCENT).bold()),
+            Span::styled(&app.filter_text, Style::default().fg(TEXT)),
+            Span::styled("█", Style::default().fg(ACCENT)),
+            Span::styled("  (Enter to apply, Esc to cancel)", Style::default().fg(MUTED)),
+        ];
+        frame.render_widget(
+            Paragraph::new(Line::from(spans))
+                .style(Style::default().bg(BG).fg(MUTED))
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    }
+
     let mut spans = vec![
         Span::styled("q", Style::default().fg(ACCENT).bold()),
         Span::styled(": quit  ", Style::default().fg(MUTED)),
@@ -530,10 +680,16 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, error: Option<&str>) {
         Span::styled("tab", Style::default().fg(ACCENT).bold()),
         Span::styled(": switch  ", Style::default().fg(MUTED)),
         Span::styled("↑↓", Style::default().fg(ACCENT).bold()),
-        Span::styled(": scroll", Style::default().fg(MUTED)),
+        Span::styled(": scroll  ", Style::default().fg(MUTED)),
+        Span::styled("1-9", Style::default().fg(ACCENT).bold()),
+        Span::styled(": select  ", Style::default().fg(MUTED)),
+        Span::styled("s", Style::default().fg(ACCENT).bold()),
+        Span::styled(": sort  ", Style::default().fg(MUTED)),
+        Span::styled("/", Style::default().fg(ACCENT).bold()),
+        Span::styled(": filter", Style::default().fg(MUTED)),
     ];
 
-    if let Some(error) = error {
+    if let Some(error) = &app.error {
         spans.push(Span::styled("  •  ", Style::default().fg(MUTED)));
         spans.push(Span::styled(
             truncate_with_ellipsis(error, 60),
@@ -566,42 +722,38 @@ fn section_block<'a>(title: &'a str, focused: bool) -> Block<'a> {
         .style(Style::default().bg(PANEL_BG).fg(TEXT))
 }
 
-fn running_row(index: usize, running: &RunningSnapshot) -> Row<'static> {
-    let row_bg = if index.is_multiple_of(2) {
+fn running_row(index: usize, running: &RunningSnapshot, selected: Option<usize>) -> Row<'static> {
+    let is_selected = selected == Some(index);
+    let row_bg = if is_selected {
+        PANEL_ALT
+    } else if index.is_multiple_of(2) {
         PANEL_BG
     } else {
         BG
     };
-    let pid_str = running
-        .pid
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| "-".to_string());
-    let age = format_age(&running.started_at);
-    let age_turn = format!("{} / {}", age, running.turn_count);
-    let session = truncate_session_id(running.session_id.as_deref());
-    let event = raw_event_text(
+    let update = humanize_update(
         running.last_event.as_deref(),
         running.last_message.as_deref(),
     );
 
-    Row::new(vec![
+    let row = Row::new(vec![
         Cell::from(truncate_with_ellipsis(&running.identifier, 12)),
         Cell::from(running.state.clone()).style(Style::default().fg(state_color(&running.state))),
-        Cell::from(pid_str),
-        Cell::from(age_turn),
+        Cell::from(running.turn_count.to_string()),
+        Cell::from(truncate_with_ellipsis(&update, 18)),
         Cell::from(format_with_commas(running.total_tokens)),
-        Cell::from(session),
-        Cell::from(truncate_with_ellipsis(&event, 40)),
     ])
-    .style(Style::default().bg(row_bg).fg(TEXT))
+    .style(Style::default().bg(row_bg).fg(TEXT));
+
+    if is_selected {
+        row.style(Style::default().bg(PANEL_ALT).fg(TEXT).bold())
+    } else {
+        row
+    }
 }
 
 fn retry_row(index: usize, retry: &RetrySnapshot) -> Row<'static> {
-    let row_bg = if index.is_multiple_of(2) {
-        PANEL_BG
-    } else {
-        BG
-    };
+    let row_bg = if index.is_multiple_of(2) { PANEL_BG } else { BG };
 
     Row::new(vec![
         Cell::from(truncate_with_ellipsis(&retry.identifier, 12)),
@@ -615,42 +767,22 @@ fn retry_row(index: usize, retry: &RetrySnapshot) -> Row<'static> {
     .style(Style::default().bg(row_bg).fg(TEXT))
 }
 
-/// Build raw event text for display (no humanization).
-/// Prefers last_message; falls back to last_event.
-fn raw_event_text(last_event: Option<&str>, last_message: Option<&str>) -> String {
-    if let Some(msg) = last_message.filter(|m| !m.trim().is_empty()) {
-        return msg.to_string();
+fn humanize_update(last_event: Option<&str>, last_message: Option<&str>) -> String {
+    if let Some(event) = last_event.filter(|event| !event.trim().is_empty()) {
+        let display = humanize_event(event);
+        if display == event {
+            return last_message
+                .filter(|message| !message.trim().is_empty())
+                .unwrap_or(display)
+                .to_string();
+        }
+        return display.to_string();
     }
-    last_event
-        .filter(|e| !e.trim().is_empty())
+
+    last_message
+        .filter(|message| !message.trim().is_empty())
         .unwrap_or("-")
         .to_string()
-}
-
-/// Format an RFC 3339 timestamp as elapsed age: "Xm Ys".
-fn format_age(started_at: &str) -> String {
-    DateTime::parse_from_rfc3339(started_at)
-        .map(|ts| {
-            let elapsed = Utc::now().signed_duration_since(ts.with_timezone(&Utc));
-            let total_secs = elapsed.num_seconds().max(0);
-            if total_secs < 60 {
-                format!("{}s", total_secs)
-            } else {
-                format!("{}m {}s", total_secs / 60, total_secs % 60)
-            }
-        })
-        .unwrap_or_else(|_| "-".to_string())
-}
-
-/// Truncate a session ID to first 4 + last 6 chars.
-fn truncate_session_id(session_id: Option<&str>) -> String {
-    match session_id {
-        Some(sid) if sid.len() > 10 => {
-            format!("{}...{}", &sid[..4], &sid[sid.len() - 6..])
-        }
-        Some(sid) => sid.to_string(),
-        None => "-".to_string(),
-    }
 }
 
 fn format_due_at(value: &str) -> String {
@@ -784,6 +916,7 @@ struct ApiRunningSnapshot {
     issue_id: String,
     identifier: String,
     state: String,
+    pid: Option<u32>,
     session_id: Option<String>,
     turn_count: u32,
     last_event: Option<String>,
@@ -792,6 +925,7 @@ struct ApiRunningSnapshot {
     input_tokens: u64,
     output_tokens: u64,
     total_tokens: u64,
+    issue_url: Option<String>,
 }
 
 impl From<ApiRunningSnapshot> for RunningSnapshot {
@@ -800,7 +934,7 @@ impl From<ApiRunningSnapshot> for RunningSnapshot {
             issue_id: value.issue_id,
             identifier: value.identifier,
             state: value.state,
-            pid: None,
+            pid: value.pid,
             session_id: value.session_id,
             turn_count: value.turn_count,
             last_event: value.last_event,
@@ -809,6 +943,7 @@ impl From<ApiRunningSnapshot> for RunningSnapshot {
             input_tokens: value.input_tokens,
             output_tokens: value.output_tokens,
             total_tokens: value.total_tokens,
+            issue_url: value.issue_url,
         }
     }
 }
@@ -820,6 +955,7 @@ struct ApiRetrySnapshot {
     attempt: u32,
     due_at: String,
     error: Option<String>,
+    issue_url: Option<String>,
 }
 
 impl From<ApiRetrySnapshot> for RetrySnapshot {
@@ -830,6 +966,7 @@ impl From<ApiRetrySnapshot> for RetrySnapshot {
             attempt: value.attempt,
             due_at: value.due_at,
             error: value.error,
+            issue_url: value.issue_url,
         }
     }
 }
@@ -896,7 +1033,8 @@ mod tests {
                     "started_at": "2026-03-14T10:01:24Z",
                     "input_tokens": 500,
                     "output_tokens": 200,
-                    "total_tokens": 700
+                    "total_tokens": 700,
+                    "issue_url": "https://example.test/issues/rusty-28"
                 }
             ],
             "retrying": [],
@@ -917,5 +1055,70 @@ mod tests {
         assert_eq!(state.snapshot.running[0].identifier, "rusty-28");
         assert_eq!(state.snapshot.agent_totals.total_tokens, 1_500);
         assert!(state.generated_at.is_some());
+    }
+
+    #[test]
+    fn dashboard_api_response_preserves_issue_url() {
+        let payload = r#"{
+            "generated_at": "2026-03-14T10:01:46Z",
+            "counts": { "running": 1, "retrying": 0 },
+            "running": [
+                {
+                    "issue_id": "42",
+                    "identifier": "rusty-42",
+                    "state": "InProgress",
+                    "session_id": null,
+                    "turn_count": 1,
+                    "last_event": null,
+                    "last_message": null,
+                    "started_at": "2026-03-14T10:01:24Z",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "issue_url": "https://github.com/example/repo/issues/42"
+                }
+            ],
+            "retrying": [],
+            "codex_totals": { "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "seconds_running": 0.0 },
+            "rate_limits": null
+        }"#;
+
+        let response: DashboardApiResponse = serde_json::from_str(payload).expect("valid payload");
+        let state = response.into_state();
+        assert_eq!(
+            state.snapshot.running[0].issue_url.as_deref(),
+            Some("https://github.com/example/repo/issues/42")
+        );
+    }
+
+    #[test]
+    fn sort_mode_cycles_through_all_variants() {
+        use super::SortMode;
+
+        let mut mode = SortMode::Default;
+        mode = mode.next();
+        assert_eq!(mode, SortMode::Identifier);
+        mode = mode.next();
+        assert_eq!(mode, SortMode::State);
+        mode = mode.next();
+        assert_eq!(mode, SortMode::Tokens);
+        mode = mode.next();
+        assert_eq!(mode, SortMode::Turns);
+        mode = mode.next();
+        assert_eq!(mode, SortMode::Default);
+    }
+
+    #[test]
+    fn sort_mode_labels_are_non_empty() {
+        use super::SortMode;
+        for mode in [
+            SortMode::Default,
+            SortMode::Identifier,
+            SortMode::State,
+            SortMode::Tokens,
+            SortMode::Turns,
+        ] {
+            assert!(!mode.label().is_empty());
+        }
     }
 }
