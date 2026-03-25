@@ -95,7 +95,7 @@ fn resolve_workspace_root_expands_home() {
     let mut config = RustyConfig::default();
     config.workspace.root = Some("~/test_workspaces".to_string());
 
-    let expanded = resolve_workspace_root(&config);
+    let expanded = resolve_workspace_root(&config).unwrap();
 
     assert_eq!(
         expanded,
@@ -110,9 +110,41 @@ fn resolve_workspace_root_uses_temp_when_not_set() {
     config.workspace.root = None;
 
     assert_eq!(
-        resolve_workspace_root(&config),
+        resolve_workspace_root(&config).unwrap(),
         std::env::temp_dir().join("rusty_workspaces")
     );
+}
+
+#[test]
+fn resolve_workspace_root_resolves_env_var() {
+    let var_name = "RUSTY_TEST_WORKSPACE_ROOT_9E4F2A12";
+    let expected = std::env::temp_dir().join("rusty-cli-test-workspaces");
+    std::env::set_var(var_name, expected.to_string_lossy().to_string());
+
+    let mut config = RustyConfig::default();
+    config.workspace.root = Some(format!("${var_name}"));
+
+    let resolved = resolve_workspace_root(&config).unwrap();
+
+    assert_eq!(resolved, expected);
+    std::env::remove_var(var_name);
+}
+
+#[test]
+fn resolve_workspace_root_errors_for_missing_env_var() {
+    let var_name = "RUSTY_TEST_WORKSPACE_ROOT_MISSING_91B73D5E";
+    std::env::remove_var(var_name);
+
+    let mut config = RustyConfig::default();
+    config.workspace.root = Some(format!("${var_name}"));
+
+    let err = resolve_workspace_root(&config).unwrap_err();
+
+    assert!(matches!(
+        err,
+        rusty::config::ConfigError::ValidationError(message)
+            if message == format!("environment variable '{}' is not set or empty", var_name)
+    ));
 }
 
 #[test]

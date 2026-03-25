@@ -70,6 +70,11 @@ tracker:
   repo: "your-repo"
 ```
 
+The checked-in workflow template uses `workspace.root: $RUSTY_WORKSPACE_ROOT`. Before
+running `rusty`, either set that environment variable in your shell or replace it with a
+concrete path such as `~/rusty_workspaces`. If the variable is unset, `rusty run` now
+fails fast instead of creating a literal `$RUSTY_WORKSPACE_ROOT` directory in your repo.
+
 ### 4. Run
 
 ```bash
@@ -238,7 +243,7 @@ Per-issue workspace directory settings.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `root` | string | `<TEMP_DIR>/rusty_workspaces` | Root directory for workspaces. Supports `~` (home) expansion. |
+| `root` | string | `<TEMP_DIR>/rusty_workspaces` | Root directory for workspaces. Supports `~` (home) expansion and `$VAR` env references; env-backed values must resolve before startup. |
 
 #### `hooks`
 

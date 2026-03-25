@@ -36,6 +36,7 @@ tracker:
 polling:
   interval_ms: 30000
 workspace:
+  # Set RUSTY_WORKSPACE_ROOT before running, or replace this with a concrete path.
   root: $RUSTY_WORKSPACE_ROOT
 hooks:
   after_create: |

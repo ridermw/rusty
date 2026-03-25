@@ -96,19 +96,17 @@ pub struct PrerequisiteReport {
     pub github_cli_version: Option<String>,
 }
 
-pub fn resolve_workspace_root(config: &crate::config::schema::RustyConfig) -> PathBuf {
+pub fn resolve_workspace_root(
+    config: &crate::config::schema::RustyConfig,
+) -> Result<PathBuf, crate::config::ConfigError> {
     config
         .workspace
         .root
         .as_deref()
-        .map(|root| {
-            // Resolve $VAR env references first, then expand ~
-            let resolved =
-                crate::config::resolve_env_value(root).unwrap_or_else(|_| root.to_string());
-            crate::config::expand_home(&resolved)
-        })
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("rusty_workspaces"))
+        .map(crate::config::resolve_path)
+        .transpose()
+        .map(|root| root.map(PathBuf::from))
+        .map(|root| root.unwrap_or_else(|| std::env::temp_dir().join("rusty_workspaces")))
 }
 
 pub fn check_prerequisites() -> PrerequisiteReport {
@@ -294,7 +292,12 @@ async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
     crate::config::validate_dispatch_config(&config).await?;
     info!("Configuration validated");
 
-    let workspace_root = resolve_workspace_root(&config);
+    let workspace_root = resolve_workspace_root(&config).map_err(|e| {
+        anyhow::anyhow!(
+            "invalid workspace.root in {}: {e}",
+            args.workflow_path.display()
+        )
+    })?;
     std::fs::create_dir_all(&workspace_root)
         .map_err(|e| anyhow::anyhow!("failed to create workspace root: {e}"))?;
 
@@ -313,7 +316,8 @@ async fn run_daemon(args: RunArgs) -> anyhow::Result<()> {
     let (orch_tx, orch_rx) =
         tokio::sync::mpsc::channel::<crate::orchestrator::OrchestratorMsg>(256);
 
-    let (sse_tx, _) = tokio::sync::broadcast::channel::<crate::orchestrator::OrchestratorSnapshot>(64);
+    let (sse_tx, _) =
+        tokio::sync::broadcast::channel::<crate::orchestrator::OrchestratorSnapshot>(64);
 
     let shutdown_tx = orch_tx.clone();
     tokio::spawn(async move {
